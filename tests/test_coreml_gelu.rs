@@ -152,7 +152,7 @@ fn gelu_float16_emits_deferred_activation_and_filter_transposes() {
         let operations: Vec<_> = programs
             .iter()
             .flat_map(|program| {
-                &program.functions["main"].block_specializations["CoreML7"].operations
+                &program.functions["main"].block_specializations["CoreML8"].operations
             })
             .collect();
         let (conv_index, conv) = operations
@@ -274,7 +274,7 @@ fn gelu_float16_lowering_preserves_half_boundaries_and_float32_evaluation() {
     let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
         panic!("expected MLProgram");
     };
-    let block = &program.functions["main"].block_specializations["CoreML7"];
+    let block = &program.functions["main"].block_specializations["CoreML8"];
     assert_eq!(
         block
             .operations
@@ -399,7 +399,7 @@ fn gelu_float16_temporaries_do_not_shadow_graph_names() {
     let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
         panic!("expected MLProgram");
     };
-    let block = &program.functions["main"].block_specializations["CoreML7"];
+    let block = &program.functions["main"].block_specializations["CoreML8"];
     assert_eq!(
         block.operations[0].outputs[0].name,
         "result_gelu_input_fp32_1_2"

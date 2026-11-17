@@ -140,7 +140,9 @@ pub(crate) enum MLBackendGraph<'context> {
         std::marker::PhantomData<&'context ()>,
     ),
     #[cfg(feature = "coreml-runtime")]
-    CoremlModel(crate::backends::coreml::CoremlGraph),
+    // Boxed: the compiled model with its load diagnostics and state is far larger than
+    // the other variants.
+    CoremlModel(Box<crate::backends::coreml::CoremlGraph>),
     #[cfg(feature = "litert-runtime")]
     LiteRtGraph(crate::backends::litert::LiteRtGraph),
     #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
@@ -180,7 +182,18 @@ impl<'context> MLBackendGraph<'context> {
     #[cfg(feature = "coreml-runtime")]
     pub(crate) fn as_coreml_model(&self) -> Option<&crate::backends::coreml::CoremlGraph> {
         if let Self::CoremlModel(v) = self {
-            Some(v)
+            Some(v.as_ref())
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "coreml-runtime")]
+    pub(crate) fn as_coreml_model_mut(
+        &mut self,
+    ) -> Option<&mut crate::backends::coreml::CoremlGraph> {
+        if let Self::CoremlModel(v) = self {
+            Some(v.as_mut())
         } else {
             None
         }
@@ -307,6 +320,21 @@ impl<'context> MLGraph<'context> {
         {
             None
         }
+    }
+
+    /// Reset the state the backend carries between dispatches to zeros (rustnn extension).
+    ///
+    /// CoreML graphs built with `CoremlOptions::carried_state_pairs` or
+    /// `carry_state_automatically` keep those pairs inside the compiled model; this replaces
+    /// the model's `MLState` with a fresh one, as at build time. Graphs without carried state
+    /// return `Ok(())` unchanged. The carried pairs are listed in
+    /// `CoremlLoadDiagnostics::carried_state_pairs`.
+    pub fn rustnn_reset_state(&mut self) -> Result<()> {
+        #[cfg(feature = "coreml-runtime")]
+        if let Some(graph) = self.backend.as_coreml_model_mut() {
+            return graph.reset_state();
+        }
+        Ok(())
     }
 
     pub(crate) fn new(backend: MLBackendGraph<'context>, graph_info: &GraphInfo) -> Result<Self> {

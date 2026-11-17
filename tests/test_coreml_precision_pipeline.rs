@@ -1758,7 +1758,7 @@ fn precision_pipeline_keeps_condition_casts_out_of_half_widening_children() {
                     let Some(model::Type::MlProgram(program)) = &stage.r#type else {
                         panic!("program")
                     };
-                    program.functions["main"].block_specializations["CoreML7"]
+                    program.functions["main"].block_specializations["CoreML8"]
                         .operations
                         .iter()
                 })

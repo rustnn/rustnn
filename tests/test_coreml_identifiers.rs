@@ -122,7 +122,7 @@ fn coreml_identifiers_are_deterministic_for_large_duplicate_name_graphs() {
             .inputs
             .iter()
             .chain(
-                function.block_specializations["CoreML7"]
+                function.block_specializations["CoreML8"]
                     .operations
                     .iter()
                     .flat_map(|op| &op.outputs),

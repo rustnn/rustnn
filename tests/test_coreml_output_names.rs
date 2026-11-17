@@ -240,7 +240,7 @@ fn alias_metadata_preserves_names_dtypes_shapes_and_unique_ssa_values() {
                     panic!("expected MLProgram child");
                 };
                 let function = &program.functions["main"];
-                let block = &function.block_specializations["CoreML7"];
+                let block = &function.block_specializations["CoreML8"];
                 assert_eq!(
                     block.outputs.len(),
                     child.description.as_ref().unwrap().output.len()
@@ -300,7 +300,7 @@ fn ordinary_single_copy_output_keeps_its_name_and_serializes_the_source_proof() 
     let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
         panic!("expected program")
     };
-    let block = &program.functions["main"].block_specializations["CoreML7"];
+    let block = &program.functions["main"].block_specializations["CoreML8"];
     assert!(block.operations.iter().all(|op| op.r#type != "mul"));
 
     graph.operations = vec![Operation::Neg {

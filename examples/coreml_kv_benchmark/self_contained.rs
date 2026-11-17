@@ -117,6 +117,10 @@ fn run_mode(mode: &str) -> Result<Value> {
     let attended = tensor(&mut context, &token_shape)?;
     let query = query();
     context.write_tensor(&q, &query)?;
+    // `state` keeps both caches inside the model as an MLState: no cache tensor is bound,
+    // and the cache cannot be read back, so only the attention output is checked. Every
+    // cache value here is a multiple of 1/128 below 2, exact in the float16 state storage.
+    let stateful = mode == "state";
     let mut runs = Vec::new();
     // Oracle checking is outside measured dispatch intervals. A separate pass
     // measures cache chaining with no cache inspection or reference computation.
@@ -126,6 +130,7 @@ fn run_mode(mode: &str) -> Result<Value> {
         let mut scratch = key_reference.clone();
         context.write_tensor(&keys[0], &key_reference)?;
         context.write_tensor(&values[0], &value_reference)?;
+        graph.rustnn_reset_state()?;
         let before = statistics(&context)?;
         let mut seconds = 0.0;
         let mut max_abs = 0.0f64;
@@ -151,22 +156,19 @@ fn run_mode(mode: &str) -> Result<Value> {
             // Bind the previous outputs directly in every storage mode. The
             // baseline's backend copies are reported separately, not inflated
             // by an additional application-level cache read/write round trip.
-            let inputs = MLNamedTensors::from([
-                ("past_key", &keys[previous]),
-                ("past_value", &values[previous]),
+            let mut inputs = MLNamedTensors::from([
                 ("new_key", &new_key),
                 ("new_value", &new_value),
                 ("query", &q),
             ]);
-            context.dispatch(
-                &mut graph,
-                &inputs,
-                &MLNamedTensors::from([
-                    ("present_key", &keys[next]),
-                    ("present_value", &values[next]),
-                    ("attended", &attended),
-                ]),
-            )?;
+            let mut outputs = MLNamedTensors::from([("attended", &attended)]);
+            if !stateful {
+                inputs.insert("past_key", &keys[previous]);
+                inputs.insert("past_value", &values[previous]);
+                outputs.insert("present_key", &keys[next]);
+                outputs.insert("present_value", &values[next]);
+            }
+            context.dispatch(&mut graph, &inputs, &outputs)?;
             let mut actual = vec![0f32; HEADS * WIDTH];
             context.read_tensor(&attended, &mut actual)?;
             seconds += start.elapsed().as_secs_f64();
@@ -181,10 +183,11 @@ fn run_mode(mode: &str) -> Result<Value> {
                     "{mode} step {step}: {comparison}"
                 );
                 max_abs = max_abs.max(comparison["max_abs"].as_f64().unwrap());
-                for (cache, expected) in [
+                let caches = [
                     (&keys[next], &key_reference),
                     (&values[next], &value_reference),
-                ] {
+                ];
+                for (cache, expected) in caches.into_iter().filter(|_| !stateful) {
                     context.read_tensor(cache, &mut scratch)?;
                     ensure!(
                         scratch == *expected,
@@ -217,8 +220,9 @@ fn run_mode(mode: &str) -> Result<Value> {
                 );
             } else {
                 ensure!(io.input_copy_bytes == 0, "retained inputs were copied");
+                let bound = if stateful { 3 } else { 5 };
                 ensure!(
-                    io.native_input_bindings == (STEPS * 5) as u64,
+                    io.native_input_bindings == (STEPS * bound) as u64,
                     "retained tensors must bind directly on every dispatch"
                 );
             }
@@ -232,7 +236,7 @@ fn run_mode(mode: &str) -> Result<Value> {
 
 pub(super) fn run() -> Result<Value> {
     let mut results = Vec::new();
-    for mode in ["baseline", "persistent", "backings"] {
+    for mode in ["baseline", "persistent", "backings", "state"] {
         eprintln!("Fixed-window attention/cache benchmark: {mode}");
         results.push(run_mode(mode)?);
     }
@@ -253,7 +257,7 @@ mod tests {
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     fn all_storage_modes_preserve_attention_and_cache_contents() {
         let report = run().unwrap();
-        assert_eq!(report["results"].as_array().unwrap().len(), 3);
+        assert_eq!(report["results"].as_array().unwrap().len(), 4);
         for result in report["results"].as_array().unwrap() {
             let measured = &result["runs"][1];
             assert_eq!(measured["phase"], "measured");

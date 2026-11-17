@@ -302,6 +302,7 @@ pub(crate) fn run_coreml_tensors(
     inputs: &HashMap<String, CoremlTensorBinding<'_>>,
     outputs: &HashMap<String, CoremlTensorBinding<'_>>,
     output_backings: bool,
+    state: Option<&CoremlState>,
     statistics: &mut CoremlTensorStatistics,
 ) -> Result<HashMap<String, Vec<u8>>, GraphError> {
     let mut unique = HashSet::new();
@@ -433,14 +434,25 @@ pub(crate) fn run_coreml_tensors(
         let _provider_guard = ReleaseOnDrop(provider);
         let mut output_provider: *mut Object = ptr::null_mut();
         let mut error = [0u8; 1024];
-        let status = rustnn_coreml_predict_backed(
-            model.model,
-            provider,
-            backings,
-            &mut output_provider,
-            error.as_mut_ptr().cast(),
-            error.len(),
-        );
+        let status = match state {
+            Some(state) => rustnn_coreml_predict_stateful(
+                model.model,
+                provider,
+                state.as_ptr(),
+                backings,
+                &mut output_provider,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            ),
+            None => rustnn_coreml_predict_backed(
+                model.model,
+                provider,
+                backings,
+                &mut output_provider,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            ),
+        };
         if status != 0 || output_provider.is_null() {
             return Err(failed(format!(
                 "prediction failed: {}",
@@ -984,6 +996,7 @@ mod tests {
                 &HashMap::from([("input".into(), bind(&input))]),
                 &HashMap::from([("result".into(), bind(&output))]),
                 true,
+                None,
                 &mut statistics,
             )
             .unwrap();

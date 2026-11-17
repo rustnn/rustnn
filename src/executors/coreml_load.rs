@@ -145,6 +145,10 @@ pub struct CoremlLoadDiagnostics {
     pub failures: Vec<CoremlLoadFailure>,
     /// What the compiled-bundle cache did; `Disabled` unless the option is set.
     pub cache: CacheOutcome,
+    /// Graph `(input, output)` name pairs kept inside the model as CoreML states
+    /// (`CoremlOptions::carried_state_pairs` and `carry_state_automatically`); empty for a
+    /// stateless model. These pairs are not dispatch bindings.
+    pub carried_state_pairs: Vec<(String, String)>,
 }
 
 pub(super) fn compute_unit_for_device(device: DeviceType) -> (i64, &'static str) {
@@ -289,6 +293,7 @@ impl LoadTrace {
             route,
             failures: self.failures.clone(),
             cache: CacheOutcome::Disabled,
+            carried_state_pairs: Vec::new(),
         };
         log::debug!("CoreML model load: {diagnostics:?}");
         diagnostics

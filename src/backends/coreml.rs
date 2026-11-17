@@ -16,9 +16,10 @@ use log::debug;
 use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
 use crate::converters::CoremlMlProgramConverter;
+use crate::converters::coreml_state::carried_state_pairs;
 use crate::error::Error;
 use crate::executors::coreml::{
-    BundleCacheRequest, CompiledCoremlModel, CoremlByteInput, CoremlTensorBinding,
+    BundleCacheRequest, CompiledCoremlModel, CoremlByteInput, CoremlState, CoremlTensorBinding,
     CoremlTensorStorage, compile_model_cached, run_coreml_bytes, run_coreml_tensors,
 };
 use crate::graph::{DataType, WeightsToHash};
@@ -70,11 +71,26 @@ pub(crate) struct CoremlTensor {
 pub(crate) struct CoremlGraph {
     model: CompiledCoremlModel,
     output_backings_eligible: bool,
+    /// The `MLState` carrying the graph's state pairs between dispatches; `None` for a
+    /// stateless model.
+    state: Option<CoremlState>,
 }
 
 impl CoremlGraph {
     pub(crate) fn load_diagnostics(&self) -> &crate::executors::coreml::CoremlLoadDiagnostics {
         self.model.load_diagnostics()
+    }
+
+    /// Replace the carried state with a fresh zero-initialized one. No-op without states.
+    pub(crate) fn reset_state(&mut self) -> crate::error::Result<()> {
+        if self.state.is_some() {
+            self.state = Some(
+                self.model
+                    .new_state()
+                    .map_err(|e| Error::GraphDispatchError { source: e.into() })?,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -88,19 +104,14 @@ impl fmt::Debug for CoremlGraph {
 
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
-    float16_precision: CoremlFloat16Precision,
-    compile_route: CoremlCompileRoute,
-    /// `CoremlOptions::compiled_bundle_cache`; `None` compiles every build.
-    compiled_bundle_cache: Option<std::path::PathBuf>,
+    options: CoremlOptions,
 }
 
 impl fmt::Debug for CoremlBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CoremlBuilder")
             .field("device_type", &self.device_type)
-            .field("float16_precision", &self.float16_precision)
-            .field("compile_route", &self.compile_route)
-            .field("compiled_bundle_cache", &self.compiled_bundle_cache)
+            .field("options", &self.options)
             .finish()
     }
 }
@@ -108,8 +119,16 @@ impl fmt::Debug for CoremlBuilder {
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder {
     fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
         let output_backings_eligible = supports_output_backings(&graph_info);
+        let float16_precision = self.options.float16_precision;
+        let compile_route = self.options.compile_route;
+        let pairs = carried_state_pairs(&graph_info, &self.options)
+            .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        let carried: Vec<(String, String)> = pairs
+            .iter()
+            .map(|pair| (pair.input_name(&graph_info), pair.output_name(&graph_info)))
+            .collect();
         let converted = CoremlMlProgramConverter
-            .convert_with_float16_precision(&graph_info, self.float16_precision)
+            .convert_with_carried_state(&graph_info, float16_precision, &pairs)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         // Native float16 keeps the in-memory default with its reproduced URL cases.
         // Exact float16 was qualified through URL compilation: in memory, its widened
@@ -120,7 +139,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // for the exact lowering to change, and the URL compiler evaluates such a program
         // itself, so it follows the Native rule: through the URL compiler, iOS and tvOS 26
         // and 27 return 0 for WPT's data-free uint8 clamp that saturates to 255.
-        let use_asset = match self.float16_precision {
+        let use_asset = match float16_precision {
             CoremlFloat16Precision::Exact
                 if !graph_info.input_operands.is_empty() || has_float16_operand(&graph_info) =>
             {
@@ -129,7 +148,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             _ => supports_in_memory_asset(&graph_info),
         };
         // The exporter loads from a URL too, so it needs the same proof under either lowering.
-        let constant_copy_program = self.compile_route != CoremlCompileRoute::Native
+        let constant_copy_program = compile_route != CoremlCompileRoute::Native
             && CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data);
         // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
         // cache enabled a program that would load in memory compiles from a URL instead.
@@ -139,36 +158,62 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // in-memory result (WPT float16 l2Pool2d with layout=nhwc returns inf). Either is
         // cached only when its own route is already a URL route, which the Rust export
         // route is for everything except the constant-copy programs.
-        let cache_moves_route = self.compiled_bundle_cache.is_some()
+        let cache_moves_route = self.options.compiled_bundle_cache.is_some()
             && !graph_info.input_operands.is_empty()
-            && !(self.float16_precision == CoremlFloat16Precision::Native
+            && !(float16_precision == CoremlFloat16Precision::Native
                 && has_float16_operand(&graph_info));
         let use_asset = use_asset && !cache_moves_route;
+        // Core ML's in-memory asset cannot plan a stateful program ("Failed to build the
+        // model execution plan using in-memory model with error code: -14", macOS 27.3,
+        // for a two-operation recurrence as well as a language model); the URL compiler can.
+        let use_asset = use_asset && carried.is_empty();
         let cache = self
+            .options
             .compiled_bundle_cache
             .as_deref()
             .map(|directory| BundleCacheRequest {
                 directory,
                 graph_hash: graph_info.hash_identifier("coreml", WeightsToHash::All),
-                float16_precision: self.float16_precision,
+                float16_precision,
+                carried_state: &carried,
             });
-        let model = compile_model_cached(
+        let mut model = compile_model_cached(
             converted.data,
             converted.weights_data,
             self.device_type,
             use_asset,
             constant_copy_program,
-            self.compile_route,
+            compile_route,
             cache,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        MLGraph::new(
-            MLBackendGraph::CoremlModel(CoremlGraph {
+        // Every carried pair starts as zeros inside the model; `MLGraph::rustnn_reset_state`
+        // recreates the state.
+        let state = if carried.is_empty() {
+            None
+        } else {
+            Some(
+                model
+                    .new_state()
+                    .map_err(|e| Error::GraphBuildError { source: e.into() })?,
+            )
+        };
+        model.record_carried_state_pairs(carried.clone());
+        let mut graph = MLGraph::new(
+            MLBackendGraph::CoremlModel(Box::new(CoremlGraph {
                 model,
                 output_backings_eligible,
-            }),
+                state,
+            })),
             &graph_info,
-        )
+        )?;
+        // The pairs leave the dispatch contract: the model neither reads them as inputs nor
+        // returns them as outputs.
+        for (input, output) in &carried {
+            graph.input_descriptors.remove(input);
+            graph.output_descriptors.remove(output);
+        }
+        Ok(graph)
     }
 }
 
@@ -319,6 +364,7 @@ impl CoremlContext {
             &native_inputs,
             &native_outputs,
             self.options.output_backings && coreml_graph.output_backings_eligible,
+            coreml_graph.state.as_ref(),
             &mut self.statistics,
         )
         .map_err(|e| Error::GraphDispatchError { source: e.into() })
@@ -341,9 +387,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     {
         Ok(Box::new(CoremlBuilder {
             device_type: self.device_type,
-            float16_precision: self.options.float16_precision,
-            compile_route: self.options.compile_route,
-            compiled_bundle_cache: self.options.compiled_bundle_cache.clone(),
+            options: self.options.clone(),
         }))
     }
 
@@ -511,9 +555,13 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                 .values()
                 .map(|i| i.data.len() as u64)
                 .sum::<u64>();
-            let result =
-                run_coreml_bytes(&coreml_graph.model, &byte_inputs, &graph.output_descriptors)
-                    .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
+            let result = run_coreml_bytes(
+                &coreml_graph.model,
+                &byte_inputs,
+                &graph.output_descriptors,
+                coreml_graph.state.as_ref(),
+            )
+            .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
             self.statistics.output_copy_bytes +=
                 result.values().map(|b| b.len() as u64).sum::<u64>();
             result
@@ -1428,5 +1476,251 @@ mod test {
             context.read_tensor(&out, &mut result).unwrap();
             assert_eq!(result, &[11.0f32, 22., 33., 44.]);
         }
+    }
+}
+
+#[cfg(test)]
+mod carried_state_tests {
+    use crate::backend_selection::Backend;
+    use crate::executors::coreml::{CacheOutcome, CoremlLoadRoute};
+    use crate::mlcontext::{
+        LoadDiagnostics, MLContext, MLContextOptions, MLGraph, MLNamedOperands, MLNamedTensors,
+        MLOperandDescriptor, MLPowerPreference, MLTensor, MLTensorDescriptor, RustNNOptions,
+    };
+    use crate::mlcontextoptions::CoremlOptions;
+    use crate::mlgraphbuilder::MLGraphBuilder;
+    use crate::operator_enums::MLOperandDataType;
+
+    const STEPS: usize = 3;
+    const X: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+
+    fn coreml_context<'a>(coreml: CoremlOptions) -> Option<MLContext<'a>> {
+        let options = RustNNOptions {
+            coreml,
+            ..Default::default()
+        };
+        let context = MLContext::create(
+            &MLContextOptions::new(MLPowerPreference::Default, true)
+                .with_rustnn_backend_hint(Backend::Coreml)
+                .with_rustnn_options(options),
+        );
+        match context {
+            Ok(ctx) => Some(ctx),
+            Err(crate::error::Error::NoBackendAvailableForBackendHint { .. }) => None,
+            Err(e) => panic!("unexpected context creation error: {e:?}"),
+        }
+    }
+
+    fn descriptor() -> MLOperandDescriptor {
+        MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 4])
+    }
+
+    /// `next_state_0 = state_0 + x`; `y = next_state_0 + x`.
+    fn build<'c>(context: &mut MLContext<'c>) -> MLGraph<'c> {
+        let mut builder = MLGraphBuilder::new(context).unwrap();
+        let x = builder.input("x", &descriptor()).unwrap();
+        let state = builder.input("state_0", &descriptor()).unwrap();
+        let next_state = builder.add(state, x).unwrap();
+        let y = builder.add(next_state, x).unwrap();
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("next_state_0", next_state);
+        outputs.insert("y", y);
+        builder.build(&outputs).unwrap()
+    }
+
+    fn tensor(context: &mut MLContext<'_>) -> MLTensor {
+        let mut io = MLTensorDescriptor::from_operand_descriptor(&descriptor());
+        io.set_writable(true);
+        io.set_readable(true);
+        context.create_tensor(&io).unwrap()
+    }
+
+    /// Three steps with the state carried by the caller through a host round trip.
+    fn stateless_outputs(reuse_tensor_storage: bool) -> Option<Vec<[f32; 4]>> {
+        let mut context = coreml_context(CoremlOptions {
+            reuse_tensor_storage,
+            ..Default::default()
+        })?;
+        let mut graph = build(&mut context);
+        assert!(graph.input_descriptors.contains_key("state_0"));
+        assert!(graph.output_descriptors.contains_key("next_state_0"));
+        let (x, state, next_state, y) = (
+            tensor(&mut context),
+            tensor(&mut context),
+            tensor(&mut context),
+            tensor(&mut context),
+        );
+        context.write_tensor(&x, &X).unwrap();
+        context.write_tensor(&state, &[0.0f32; 4]).unwrap();
+        let mut ys = Vec::new();
+        for _ in 0..STEPS {
+            let mut inputs = MLNamedTensors::new();
+            inputs.insert("x", &x);
+            inputs.insert("state_0", &state);
+            let mut outputs = MLNamedTensors::new();
+            outputs.insert("next_state_0", &next_state);
+            outputs.insert("y", &y);
+            context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+            let mut carried = [0.0f32; 4];
+            context.read_tensor(&next_state, &mut carried).unwrap();
+            context.write_tensor(&state, &carried).unwrap();
+            let mut out = [0.0f32; 4];
+            context.read_tensor(&y, &mut out).unwrap();
+            ys.push(out);
+        }
+        Some(ys)
+    }
+
+    fn stateful_step(
+        context: &mut MLContext<'_>,
+        graph: &mut MLGraph<'_>,
+        x: &MLTensor,
+        y: &MLTensor,
+    ) -> [f32; 4] {
+        let mut inputs = MLNamedTensors::new();
+        inputs.insert("x", x);
+        let mut outputs = MLNamedTensors::new();
+        outputs.insert("y", y);
+        context.dispatch(graph, &inputs, &outputs).unwrap();
+        let mut out = [0.0f32; 4];
+        context.read_tensor(y, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn carried_state_matches_the_host_round_trip_and_resets() {
+        let _ = pretty_env_logger::try_init();
+        let expected = [
+            [2.0, 4.0, 6.0, 8.0],
+            [3.0, 6.0, 9.0, 12.0],
+            [4.0, 8.0, 12.0, 16.0],
+        ];
+        for reuse_tensor_storage in [false, true] {
+            let Some(stateless) = stateless_outputs(reuse_tensor_storage) else {
+                return;
+            };
+            assert_eq!(stateless, expected);
+
+            let explicit = CoremlOptions {
+                reuse_tensor_storage,
+                carried_state_pairs: vec![("state_0".into(), "next_state_0".into())],
+                ..Default::default()
+            };
+            #[allow(unused_mut)]
+            let mut variants = vec![
+                (explicit.clone(), CoremlLoadRoute::CompiledUrl),
+                (
+                    CoremlOptions {
+                        reuse_tensor_storage,
+                        carry_state_automatically: true,
+                        ..Default::default()
+                    },
+                    CoremlLoadRoute::CompiledUrl,
+                ),
+            ];
+            // The pure-Rust exporter writes the same stateful program.
+            #[cfg(feature = "coreml-export")]
+            variants.push((
+                CoremlOptions {
+                    compile_route: crate::mlcontextoptions::CoremlCompileRoute::RustExport,
+                    ..explicit
+                },
+                CoremlLoadRoute::RustExport,
+            ));
+            for (coreml, route) in variants {
+                let mut context = coreml_context(coreml).unwrap();
+                let mut graph = build(&mut context);
+                // The pair leaves the dispatch contract and is reported by the diagnostics.
+                assert_eq!(graph.input_descriptors.keys().collect::<Vec<_>>(), ["x"]);
+                assert_eq!(graph.output_descriptors.keys().collect::<Vec<_>>(), ["y"]);
+                let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics()
+                else {
+                    panic!("CoreML load diagnostics");
+                };
+                // A stateful program never takes the in-memory asset.
+                assert_eq!(diagnostics.route, route);
+                assert!(diagnostics.failures.is_empty(), "{diagnostics:?}");
+                assert_eq!(
+                    diagnostics.carried_state_pairs,
+                    [("state_0".to_string(), "next_state_0".to_string())]
+                );
+
+                let (x, y, state) = (
+                    tensor(&mut context),
+                    tensor(&mut context),
+                    tensor(&mut context),
+                );
+                context.write_tensor(&x, &X).unwrap();
+                let stateful: Vec<[f32; 4]> = (0..STEPS)
+                    .map(|_| stateful_step(&mut context, &mut graph, &x, &y))
+                    .collect();
+                assert_eq!(stateful, stateless, "reuse={reuse_tensor_storage}");
+
+                // Binding the carried pair is an error: the model has no such features.
+                let mut inputs = MLNamedTensors::new();
+                inputs.insert("x", &x);
+                inputs.insert("state_0", &state);
+                let mut outputs = MLNamedTensors::new();
+                outputs.insert("y", &y);
+                assert!(context.dispatch(&mut graph, &inputs, &outputs).is_err());
+
+                // A reset starts again from zeros; without a reset the state keeps growing.
+                assert_eq!(
+                    stateful_step(&mut context, &mut graph, &x, &y),
+                    [5.0, 10.0, 15.0, 20.0]
+                );
+                graph.rustnn_reset_state().unwrap();
+                assert_eq!(stateful_step(&mut context, &mut graph, &x, &y), expected[0]);
+            }
+        }
+    }
+
+    /// The cached bundle of a stateful graph is its own entry and carries state on a hit.
+    #[test]
+    fn stateful_graphs_use_the_compiled_bundle_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let cached = |pairs: Vec<(String, String)>| CoremlOptions {
+            carried_state_pairs: pairs,
+            compiled_bundle_cache: Some(directory.path().to_path_buf()),
+            ..Default::default()
+        };
+        let pair = vec![("state_0".to_string(), "next_state_0".to_string())];
+        let outcome = |graph: &MLGraph<'_>| match graph.rustnn_load_diagnostics() {
+            Some(LoadDiagnostics::Coreml(diagnostics)) => diagnostics.cache,
+            _ => panic!("CoreML load diagnostics"),
+        };
+        for expected in [CacheOutcome::Miss, CacheOutcome::Hit] {
+            let Some(mut context) = coreml_context(cached(pair.clone())) else {
+                return;
+            };
+            let mut graph = build(&mut context);
+            assert_eq!(outcome(&graph), expected);
+            let (x, y) = (tensor(&mut context), tensor(&mut context));
+            context.write_tensor(&x, &X).unwrap();
+            assert_eq!(
+                stateful_step(&mut context, &mut graph, &x, &y),
+                [2.0, 4.0, 6.0, 8.0]
+            );
+            assert_eq!(
+                stateful_step(&mut context, &mut graph, &x, &y),
+                [3.0, 6.0, 9.0, 12.0]
+            );
+        }
+        // The same graph without pairs is another program and another entry.
+        let mut context = coreml_context(cached(Vec::new())).unwrap();
+        assert_eq!(outcome(&build(&mut context)), CacheOutcome::Miss);
+    }
+
+    #[test]
+    fn reset_state_is_a_no_op_for_stateless_graphs() {
+        let Some(mut context) = coreml_context(CoremlOptions::default()) else {
+            return;
+        };
+        let mut graph = build(&mut context);
+        graph.rustnn_reset_state().unwrap();
+        let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() else {
+            panic!("CoreML load diagnostics");
+        };
+        assert!(diagnostics.carried_state_pairs.is_empty());
     }
 }

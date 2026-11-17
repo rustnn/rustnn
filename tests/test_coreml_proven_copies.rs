@@ -122,7 +122,7 @@ fn metadata(graph: &GraphInfo) -> HashMap<String, String> {
         panic!("expected MLProgram")
     };
     assert!(
-        !program.functions["main"].block_specializations["CoreML7"]
+        !program.functions["main"].block_specializations["CoreML8"]
             .operations
             .is_empty()
     );
@@ -223,7 +223,7 @@ fn multi_megabyte_constant_fanout_reuses_the_existing_mil_weight_record() {
         let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
             panic!("expected MLProgram")
         };
-        let mil_source = program.functions["main"].block_specializations["CoreML7"]
+        let mil_source = program.functions["main"].block_specializations["CoreML8"]
             .operations
             .iter()
             .find(|operation| operation.r#type == "const" && operation.outputs[0].name == "source")
@@ -355,7 +355,7 @@ fn different_dtype_constant_cast_keeps_native_conversion() {
         panic!("expected MLProgram")
     };
     assert!(
-        program.functions["main"].block_specializations["CoreML7"]
+        program.functions["main"].block_specializations["CoreML8"]
             .operations
             .iter()
             .any(|operation| operation.r#type == "cast")
@@ -380,7 +380,7 @@ fn constant_float32_no_op_cast_uses_the_constant_identity_lowering() {
         let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
             panic!("expected MLProgram")
         };
-        program.functions["main"].block_specializations["CoreML7"]
+        program.functions["main"].block_specializations["CoreML8"]
             .operations
             .clone()
     };

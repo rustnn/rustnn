@@ -3030,9 +3030,9 @@ dependencies = [
 
 [[package]]
 name = "mlmodelc-export"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8baf10d8035924e6c6933a1416856c81689e037a5c78a0f4f5e86fe906368c2"
+checksum = "0d15602dc8e4e635d0eb95b1e815882a2a66ab7989df50468c37d064855b6225"
 
 [[package]]
 name = "moddef"

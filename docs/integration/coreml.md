@@ -7,8 +7,10 @@ dispatch. The Objective-C bridge lives in `src/executors/coreml.rs` and `src/exe
 
 ## Requirements
 
-- A CoreML version that accepts MLProgram models (macOS 13 or newer). The native Rust
-  backend also supports iOS; mobile validation uses iOS 18 as its deployment target.
+- macOS 15, iOS 18, tvOS 18, watchOS 11 or visionOS 2, or newer. Every emitted model declares
+  Core ML specification version 9 and the CoreML8 MIL opset (`ios18` in MIL text), the
+  generation that has `MLState` and the blockwise constant operations; older systems refuse to
+  load it.
 - The source gates cover every Apple target (`target_vendor = "apple"`). CI builds and tests
   macOS only. tvOS, watchOS and visionOS builds additionally depend on the `objc` 0.2 message
   ABI, which the published crate selects correctly only for macOS and iOS; see
@@ -137,9 +139,9 @@ The key is a SeaHash over these inputs, each of which the manifest records:
   operand order, so the blob is the same bytes on every conversion of one graph;
 - the compute-unit policy of the requested device and `float16_precision`;
 - the compile route: `native` for a bundle from `MLModel.compileModel`, `rust-export` for a
-  bundle the exporter wrote under the `RustExport` [compile route](#compile-routes). The key
-  does not cover the version of the `mlmodelc-export` crate, so clear the directory after
-  updating that dependency without a rustnn release;
+  bundle the exporter wrote under the `RustExport` [compile route](#compile-routes), together
+  with the version of the `mlmodelc-export` crate that wrote it;
+- the carried-state pairs ([Carrying recurrent state](#carrying-recurrent-state-inside-the-model));
 - the crate version, a hash of the CoreML converter sources and the compile shim computed by
   `build.rs`, and the OS version and build from `sysctl` (`kern.osproductversion` and
   `kern.osversion`, for example `27.2 (25C56)`), which do not change with the user's language.
@@ -385,6 +387,45 @@ establish compute-unit placement or a memory bound; those remain separate measur
 watchOS, tvOS and visionOS also need the `objc` 0.2 message-send ABI fixed for their targets
 (the published crate uses the GNUstep lookup path there), for example with a `[patch.crates-io]`
 entry in the application's workspace. These targets are tier 3 in Rust and are not built in CI.
+
+## Carrying recurrent state inside the model
+
+A decode step of a recurrent or attention model takes its state (recurrent state,
+convolution history, KV cache) as graph inputs and returns the next state as graph outputs.
+By default every step crosses the host boundary with those arrays. With
+`RustNNOptions::coreml.carried_state_pairs` (explicit `(input, output)` name pairs, the
+`kvCachePairs` of the WebNN stateful-model explainer) or
+`RustNNOptions::coreml.carry_state_automatically` (pairs by naming convention: `X`/`next_X`,
+`past_X`/`present_X`, `X_in`/`X_out`; see `rustnn::converters::coreml_state`), the converter
+keeps each pair inside the compiled model as a CoreML `MLState`: the input is read with
+`read_state`, the output is stored with `write_state`, and the pair leaves the model's feature
+description. Both switches default to off, and a graph without pairs lowers as before.
+`MLState` needs iOS 18, macOS 15 or watchOS 11, which is what every model rustnn emits
+already requires ([Requirements](#requirements)).
+
+Rules and consequences:
+
+- A pair needs the same `float16` or `float32` data type and the same static shape on both
+  operands. CoreML stores every state as `float16`; a `float32` pair is cast after the read and
+  before the write inside the model, so the carried value is rounded to `float16` once per step.
+  Integer or dynamically shaped pairs are rejected (explicit) or skipped (automatic).
+- The paired names are not dispatch bindings any more: `MLGraph::input_descriptors` and
+  `output_descriptors` omit them and `dispatch` rejects tensors bound under those names.
+- Every state starts as zeros when the graph is built. `MLGraph::rustnn_reset_state` replaces
+  the state with fresh zeros, which is how a new conversation starts; an initial state cannot
+  be supplied through the pair. Only one state set exists per graph.
+- `CoremlLoadDiagnostics::carried_state_pairs` lists the pairs the model carries, so an
+  application can report how many of its inputs became states.
+- A state belongs to one MLProgram. A graph whose lowering needs Pipeline children (the
+  rounding boundaries of [Float16 precision](#float16-precision)) cannot carry state, and
+  building it with pairs is an error.
+- A stateful program always compiles from a URL (`CoremlLoadRoute::CompiledUrl`, or
+  `RustExport`): Core ML's in-memory asset refuses to plan one (error -14 on macOS 27.3).
+- Every compile route carries state. The exported bundle (`coreml-export`, `mlmodelc-export`
+  0.2 or newer) declares `state<tensor<fp16, ...>>` function inputs, emits `read_state` /
+  `write_state`, and lists the states under `stateSchema` in `metadata.json`.
+- The pairs are part of the [compiled-bundle cache](#compiled-bundle-cache) key, so the
+  stateful and the stateless build of one graph are separate entries.
 
 ## Testing
 

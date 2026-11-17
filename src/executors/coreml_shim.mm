@@ -195,4 +195,67 @@ int rustnn_coreml_predict_backed(void *model, void *features, void *backings,
     }
 }
 
+// Create a fresh, zero-initialized MLState for a model whose carried-state pairs live
+// inside the compiled program (`read_state` / `write_state`, iOS 18 / macOS 15). On
+// success `*out_state` is a RETAINED MLState; the caller owns it (`-newState` returns
+// +1 and `__bridge_retained` adds the caller's retain; ARC releases the local).
+int rustnn_coreml_new_state(void *model, void **out_state, char *err, size_t err_len) {
+    *out_state = NULL;
+    @try {
+        if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)) {
+            MLState *state = [(__bridge MLModel *)model newState];
+            if (state == nil) {
+                rustnn_copy_err(err, err_len, @"MLModel newState returned nil");
+                return 1;
+            }
+            *out_state = (__bridge_retained void *)state;
+            return 0;
+        }
+        rustnn_copy_err(err, err_len, @"CoreML model states require iOS 18 or macOS 15");
+        return 1;
+    } @catch (NSException *e) {
+        rustnn_copy_err(err, err_len, [NSString stringWithFormat:@"%@: %@", e.name, e.reason]);
+        return 2;
+    } @catch (...) {
+        rustnn_copy_err(err, err_len, @"exception creating a CoreML model state");
+        return 3;
+    }
+}
+
+// Run a prediction that reads and updates `state` in place. `backings` may be NULL.
+// Ownership of `*out_provider` follows `rustnn_coreml_predict`.
+int rustnn_coreml_predict_stateful(void *model, void *features, void *state, void *backings,
+                                   void **out_provider, char *err, size_t err_len) {
+    *out_provider = NULL;
+    @try {
+        if (@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)) {
+            MLPredictionOptions *options = [[MLPredictionOptions alloc] init];
+            if (backings != NULL && [options respondsToSelector:@selector(setOutputBackings:)]) {
+                options.outputBackings = (__bridge NSDictionary *)backings;
+            }
+            NSError *nserr = nil;
+            id<MLFeatureProvider> out = [(__bridge MLModel *)model
+                predictionFromFeatures:(__bridge id<MLFeatureProvider>)features
+                            usingState:(__bridge MLState *)state
+                               options:options
+                                 error:&nserr];
+            if (out == nil) {
+                rustnn_copy_err(err, err_len,
+                                nserr.localizedDescription ?: @"stateful prediction returned nil");
+                return 1;
+            }
+            *out_provider = (__bridge_retained void *)out;
+            return 0;
+        }
+        rustnn_copy_err(err, err_len, @"CoreML model states require iOS 18 or macOS 15");
+        return 1;
+    } @catch (NSException *e) {
+        rustnn_copy_err(err, err_len, [NSString stringWithFormat:@"%@: %@", e.name, e.reason]);
+        return 2;
+    } @catch (...) {
+        rustnn_copy_err(err, err_len, @"exception during stateful CoreML prediction");
+        return 3;
+    }
+}
+
 } // extern "C"

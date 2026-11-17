@@ -498,6 +498,7 @@ mod tests {
                                 ),
                             ]),
                             output_backings,
+                            None,
                             &mut statistics,
                         )
                         .unwrap();
@@ -540,6 +541,7 @@ mod tests {
                         },
                     )]),
                     &outputs,
+                    None,
                 )
                 .unwrap();
                 bytes.fill(0);
