@@ -210,7 +210,7 @@ fn input_passthroughs(
 fn constant_copies(
     graph: &LoweringGraph<'_>,
     weights: &mut super::WeightFileBuilder,
-) -> CoremlConstantCopies {
+) -> Result<CoremlConstantCopies, GraphError> {
     let origins = copy_origins(graph);
     let mut copies = CoremlConstantCopies {
         version: 2,
@@ -236,20 +236,19 @@ fn constant_copies(
         let Some(data) = graph.constant_operand_ids_to_handles.get(&origin) else {
             continue;
         };
-        copies
-            .sources
-            .entry(origin)
-            .or_insert_with(|| CoremlConstantSource {
+        if let std::collections::btree_map::Entry::Vacant(entry) = copies.sources.entry(origin) {
+            entry.insert(CoremlConstantSource {
                 descriptor: source.descriptor.clone(),
-                offset: weights.original_weight(origin, &data.data),
+                offset: weights.original_weight(origin, &data.data)?,
                 checksum: seahash::hash(&data.data),
             });
+        }
         copies
             .outputs
             .insert(logical_operand_name(graph, output), origin);
         debug_assert_eq!(operand.descriptor.data_type, source.descriptor.data_type);
     }
-    copies
+    Ok(copies)
 }
 
 impl CoremlMlProgramConverter {
@@ -12837,7 +12836,7 @@ impl CoremlMlProgramConverter {
             .any(|(logical, physical)| logical != physical);
         let inputs_changed = inputs.iter().any(|(logical, physical)| logical != physical);
         let passthroughs = input_passthroughs(graph_info);
-        let constant_copies = constant_copies(graph_info, weight_builder);
+        let constant_copies = constant_copies(graph_info, weight_builder)?;
         let metadata = Some(Metadata {
             user_defined: [
                 (OUTPUT_ALIASES_METADATA_KEY, &aliases, outputs_changed),
@@ -12953,12 +12952,76 @@ impl CoremlMlProgramConverter {
             super::coreml_blockwise::apply(folded.get_or_insert_with(|| graph_info.clone()), chains)
         };
         let graph_info = folded.as_ref().unwrap_or(graph_info);
+        let (data, weights) = self.lower_prepared(
+            graph_info,
+            blockwise,
+            exact,
+            pairs,
+            super::WeightFileBuilder::new(),
+        )?;
+        Ok(super::ConvertedGraph {
+            format: "coreml",
+            content_type: "application/x-coreml-model",
+            data,
+            weights_data: weights.map(super::WeightBlob::into_bytes).transpose()?,
+        })
+    }
+
+    /// [`Self::convert_with_carried_state`] for a graph the caller owns and will not read
+    /// again, which bounds the weight bytes on the heap to one copy.
+    ///
+    /// The constant rewrites run in place instead of on a clone of the graph, and the weight
+    /// file is assembled in an anonymous temporary file instead of in memory (in memory
+    /// where no temporary file can be created). The model and the weight bytes are those of
+    /// the borrowing conversion. Afterwards `graph` holds the rewritten operations; the
+    /// caller drops its constants before reading the weight file back.
+    pub(crate) fn convert_owned(
+        &self,
+        graph: &mut GraphInfo,
+        precision: crate::mlcontextoptions::CoremlFloat16Precision,
+        pairs: &[CarriedStatePair],
+    ) -> Result<(Vec<u8>, Option<super::WeightBlob>), GraphError> {
+        if !crate::graph::dynamic_inputs_enabled() && graph.has_dynamic_dimensions() {
+            return Err(GraphError::DynamicInputsFeatureDisabled);
+        }
+        super::coreml_constant_fold::fold_constant_views_in_place(graph);
+        let exact = precision == crate::mlcontextoptions::CoremlFloat16Precision::Exact;
+        let chains = if exact
+            && graph
+                .operands
+                .iter()
+                .any(|operand| operand.descriptor.data_type == DataType::Float16)
+        {
+            Vec::new()
+        } else {
+            super::coreml_blockwise::find_chains(graph)
+        };
+        let blockwise = if chains.is_empty() {
+            Default::default()
+        } else {
+            super::coreml_blockwise::apply(graph, chains)
+        };
+        let weight_builder = super::WeightFileBuilder::file_backed().unwrap_or_else(|error| {
+            log::debug!("CoreML weight file stays in memory: {error}");
+            super::WeightFileBuilder::new()
+        });
+        self.lower_prepared(graph, blockwise, exact, pairs, weight_builder)
+    }
+
+    /// Lowers a graph whose constant rewrites are done and encodes the model.
+    fn lower_prepared(
+        &self,
+        graph_info: &GraphInfo,
+        blockwise: super::coreml_blockwise::BlockwiseConstants,
+        exact: bool,
+        pairs: &[CarriedStatePair],
+        mut weight_builder: super::WeightFileBuilder,
+    ) -> Result<(Vec<u8>, Option<super::WeightBlob>), GraphError> {
         let mut lowering_graph = LoweringGraph::new(graph_info)?;
         lowering_graph.exact_float16 = exact;
         lowering_graph.blockwise = blockwise;
         lowering_graph.carried = CarriedStates::new(&lowering_graph, pairs)?;
         let graph_info = &lowering_graph;
-        let mut weight_builder = super::WeightFileBuilder::new();
         weight_builder.reserve(
             graph_info
                 .constant_operand_ids_to_handles
@@ -12978,18 +13041,12 @@ impl CoremlMlProgramConverter {
             })?;
 
         // Finalize weight file if any weights were added
-        let weights_data = if weight_builder.has_weights() {
-            Some(weight_builder.finalize())
+        let weights = if weight_builder.has_weights() {
+            Some(weight_builder.finish()?)
         } else {
             None
         };
-
-        Ok(super::ConvertedGraph {
-            format: "coreml",
-            content_type: "application/x-coreml-model",
-            data: buffer,
-            weights_data,
-        })
+        Ok((buffer, weights))
     }
 }
 

@@ -17,6 +17,7 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 - CoreML: the runtime links on tvOS, watchOS and visionOS without patched dependencies. The shim defines `objc_msg_lookup` and `objc_msg_lookup_super`, which the `objc` 0.2 crate calls outside macOS and iOS, and `build.rs` provides the empty `BlocksRuntime` library the `block` crate asks for there.
 
 ### Changed
+- CoreML: building a graph with inputs and at least 32 MiB of constants keeps one copy of the weights on the heap at a time instead of three. The constant rewrites run in place on the graph the build already owns, and the weight blob is assembled in an anonymous temporary file (in memory where none can be created) and read back after the graph's constants are dropped. The model and the weight bytes are unchanged.
 - CoreML: every emitted MIL function uses the CoreML8 opset (`ios18`) instead of CoreML7. Models already declared specification version 9, so the systems that load them are the same (iOS 18, macOS 15, watchOS 11 and newer).
 - `clap` and `tracing-subscriber` are now optional, behind a new default `cli` feature that also gates the `rustnn` binary; build with `default-features = false` to use the library without them.
 - The ONNX converter, `protos::onnx` and the `webnn-onnx-utils` dependency are behind a new default `onnx` feature (implied by `onnx-runtime`); `webnn-graph` is used without its `onnx` feature. Builds with `default-features = false` and a non-ONNX backend no longer compile the ONNX schema.
