@@ -167,23 +167,26 @@ Rules that hold for every converter:
   constants that is emitted as MIL `constexpr_blockwise_shift_scale`: the weights blob keeps
   the stored bytes, a `[n', g']` scale in the chain's float type and, for a nonzero zero
   point, an offset of that shape in the stored type, and CoreML decompresses the constant
-  instead of evaluating the chain into a float copy while it compiles or loads the model.
+  instead of evaluating the chain into a float copy.
   Every intermediate of the chain must be read by the chain alone and none may be a graph
   output; a graph that does not match is lowered as before, and an authored `dequantizeLinear`
   keeps its own lowering. The constant is `(q - zero) * scale` rounded once in the chain's
   float type, as in the literal chain (the module documentation has the argument, and
-  `tests/test_coreml_blockwise_constants.rs` compares the bits on the runtime for both float
-  types and both compile routes).
-  - CoreML evaluates a `matmul` over a constant weight with a different kernel than one over
-    a weight computed at run time, so the reader `matmul(x, transpose(W))` follows the load
-    route. A program that carries state always compiles from a URL: `matmul` is emitted with
-    `transpose_y = true` over the constant, and the `transpose` is omitted when only such
-    `matmul`s read it. A stateless program may load in memory, where the literal chain and
-    its `transpose` are evaluated on every dispatch and a `matmul` reading the constant
-    directly would round float16 results differently: it keeps the `transpose`, which reads
-    the constant (the URL compiler folds it). Either way a table shared by a `gather` and an
-    output projection is one stored constant, and the logits of a float16 language model
-    were the bits of the literal chain on both routes (M4 Max, macOS 27.3, CPU).
+  `tests/test_coreml_blockwise_constants.rs` reads the constant back through a `gather` and
+  compares the bits on the runtime for both float types and both compile routes).
+  - The reader `matmul(x, transpose(W))` is emitted as `matmul` with `transpose_y = true`
+    over the constant, and the `transpose` is omitted when only such `matmul`s read it. A
+    table shared by a `gather` and an output projection is one stored constant.
+  - The bit-identity is a property of the constant, not of its readers. CoreML evaluates a
+    `matmul` or `gemm` over a constant weight with another kernel than one over a weight
+    computed at run time, so float16 results can differ in rounding from the literal
+    lowering on either load route. The same test checks a dense `matmul` over the constant
+    against a host reference within float rounding, not bit for bit.
+  - Where the cost goes depends on the load route. Through the URL compiler the literal
+    chain was evaluated at compile time into a float copy, and the compressed constant
+    removes that. On the in-memory route the literal chain was evaluated on every dispatch;
+    with the compressed constant the load pays for the decompression once and dispatch
+    gets faster.
   - The exact float16 lowering of a graph with float16 operands keeps the literal chain: in
     its Pipeline the compressed constant returned `+0` where the literal chain returns `-0`
     (macOS 27.3, CPU).

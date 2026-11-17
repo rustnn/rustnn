@@ -1,13 +1,18 @@
 //! A constant dequantization chain lowered to one `constexpr_blockwise_shift_scale` constant
-//! returns the bits of the literal `cast`/`sub`/`reshape`/`mul`/`reshape` lowering.
+//! holds the bits of the literal `cast`/`sub`/`reshape`/`mul`/`reshape` lowering.
 //!
 //! Each case builds the chain twice. The first graph is recognized by the CoreML converter;
 //! in the second the `cast` has another reader, which keeps the literal lowering. Both run
 //! on the CoreML runtime, as a stateless program through the in-memory route and through
-//! the URL compiler and as a program that carries state, and both must return
-//! `fl((q - zero) * scale)`, rounded once in the chain's float type. Every block holds every
-//! byte value, so each scale meets each stored integer, including the one equal to the zero
-//! point (a zero whose sign is the scale's).
+//! the URL compiler and as a program that carries state. A `gather` of every row reads the
+//! constant back, and both lowerings must return `fl((q - zero) * scale)`, rounded once in
+//! the chain's float type. Every block holds every byte value, so each scale meets each
+//! stored integer, including the one equal to the zero point (a zero whose sign is the
+//! scale's).
+//!
+//! The `matmul` reader gets a dense input and is compared with a host reference within
+//! float rounding, not bit for bit: CoreML evaluates a `matmul` over a constant weight with
+//! another kernel than one over a weight computed at run time.
 
 #![cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 
@@ -30,6 +35,9 @@ const GROUPS: u32 = 2;
 const WIDTH: u32 = 256;
 const COLUMNS: u32 = GROUPS * WIDTH;
 const BLOCKWISE: &[u8] = b"constexpr_blockwise_shift_scale";
+/// Allowed error of a `matmul` element, in unit roundoffs of the sum of its term magnitudes.
+/// The largest seen is 0.7 (float16 through the URL compiler, M4 Max, macOS 27.3).
+const PRODUCT_ROUNDOFFS: f64 = 4.0;
 
 /// One scale per (row, block): both signs, values whose products with the stored integers
 /// need rounding in float16 and in float32, magnitudes up to the largest that keeps every
@@ -68,8 +76,7 @@ enum Program {
     InMemory,
     /// Stateless, with a `gather` over a rank-0 index, which the backend compiles from a URL.
     Url,
-    /// Carries a state, which always compiles from a URL; `matmul` reads the constant with
-    /// `transpose_y`.
+    /// Carries a state, which always compiles from a URL.
     Stateful,
 }
 
@@ -304,13 +311,8 @@ fn run(
             &MLTensorDescriptor::new(case.float, vec![u64::from(COLUMNS); 2]).to_writable(),
         )
         .unwrap();
-    // The identity matrix: `product` is then the transposed weight, each element an exact
-    // sum of one value and zeros.
-    let identity: Vec<f32> = (0..COLUMNS * COLUMNS)
-        .map(|i| if i / COLUMNS == i % COLUMNS { 1.0 } else { 0.0 })
-        .collect();
     context
-        .write_tensor(&x, &float_bytes(&identity, case.float))
+        .write_tensor(&x, &float_bytes(&dense_input(), case.float))
         .unwrap();
 
     let output = |context: &mut MLContext<'_>, shape: &[u32]| {
@@ -343,6 +345,58 @@ fn run(
     let mut product_bytes = vec![0u8; size];
     context.read_tensor(&product, &mut product_bytes).unwrap();
     (row_bytes, product_bytes)
+}
+
+/// A dense `matmul` input: every element is a nonzero multiple of 1/64, exact in float16,
+/// so every product needs the kernel's own rounding and accumulation.
+fn dense_input() -> Vec<f32> {
+    (0..COLUMNS * COLUMNS)
+        .map(|i| {
+            let (row, column) = (i / COLUMNS, i % COLUMNS);
+            let step = ((row * 31 + column * 17) % 12) as f32;
+            (if step < 6.0 { step - 6.0 } else { step - 5.0 }) / 64.0
+        })
+        .collect()
+}
+
+/// Checks `x . W^T` against a reference accumulated in `f64`. The bound is a multiple of
+/// the unit roundoff times the sum of the term magnitudes; elements whose terms could
+/// overflow the float type on the way are skipped.
+fn assert_product(label: &str, case: Case, actual: &[u8], weight: &[f64]) {
+    let (unit, largest) = match case.float {
+        DataType::Float16 => (2f64.powi(-11), 65504.0),
+        _ => (2f64.powi(-24), f64::from(f32::MAX)),
+    };
+    let x = dense_input();
+    let actual = values(actual, case.float);
+    let (mut checked, mut significant) = (0, 0);
+    for i in 0..COLUMNS as usize {
+        for row in 0..ROWS as usize {
+            let (mut sum, mut magnitude) = (0f64, 0f64);
+            for k in 0..COLUMNS as usize {
+                let term =
+                    f64::from(x[i * COLUMNS as usize + k]) * weight[row * COLUMNS as usize + k];
+                sum += term;
+                magnitude += term.abs();
+            }
+            if magnitude > largest / 2.0 {
+                continue;
+            }
+            let got = actual[i * ROWS as usize + row];
+            let bound = PRODUCT_ROUNDOFFS * unit * magnitude + f64::MIN_POSITIVE;
+            assert!(
+                (got - sum).abs() <= bound,
+                "{label}: product[{i}][{row}] = {got}, reference {sum}, bound {bound}"
+            );
+            checked += 1;
+            significant += usize::from(sum.abs() > 4.0 * bound);
+        }
+    }
+    // The bound must be able to tell the product from zeros or another layout.
+    assert!(
+        significant * 2 > checked && checked > 0,
+        "{label}: {significant} of {checked} checked products exceed their bound"
+    );
 }
 
 /// Compares element bits and names the stored byte and scale of the elements that differ.
@@ -402,12 +456,8 @@ fn check(case: Case, precision: CoremlFloat16Precision, program: Program, blockw
         "{label}: literal"
     );
     if blockwise {
-        // Only a program that carries state reads the constant with `transpose_y`.
-        assert_eq!(
-            transposes(&model),
-            usize::from(program != Program::Stateful),
-            "{label}"
-        );
+        // `matmul` reads the constant with `transpose_y`.
+        assert_eq!(transposes(&model), 0, "{label}");
     }
 
     let (blockwise_rows, blockwise_product) = run(case, recognized, precision, program);
@@ -426,21 +476,18 @@ fn check(case: Case, precision: CoremlFloat16Precision, program: Program, blockw
         &expected,
     );
 
-    // The transposed reader returns the same matrix. A sum with exact zeros may lose the
-    // sign of a zero, so compare values there.
     let weight = values(&expected, case.float);
-    let transposed: Vec<f64> = (0..COLUMNS * ROWS)
-        .map(|i| weight[((i % ROWS) * COLUMNS + i / ROWS) as usize])
-        .collect();
-    assert_eq!(
-        values(&blockwise_product, case.float),
-        transposed,
-        "{label}: matmul over the blockwise constant"
+    assert_product(
+        &format!("{label}: matmul over the blockwise constant"),
+        case,
+        &blockwise_product,
+        &weight,
     );
-    assert_eq!(
-        values(&literal_product, case.float),
-        transposed,
-        "{label}: matmul of the literal transpose"
+    assert_product(
+        &format!("{label}: matmul of the literal transpose"),
+        case,
+        &literal_product,
+        &weight,
     );
 }
 

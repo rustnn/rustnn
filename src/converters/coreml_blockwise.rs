@@ -84,21 +84,17 @@
 //! # Readers of the constant
 //!
 //! `matmul(x, transpose(W))` is the common reader, and a table may be read both by a
-//! `gather` and, transposed, by an output projection. Both read the one constant. What
-//! becomes of the `transpose` depends on how the model will be loaded, because CoreML
-//! evaluates a `matmul` over a constant weight with a different kernel than a `matmul` over a
-//! weight computed at run time (measured with a float16 language model on an M4 Max,
-//! macOS 27.3, CPU):
+//! `gather` and, transposed, by an output projection. Both read the one constant: the
+//! lowering emits MIL `matmul` with `transpose_y = true` over the constant, and omits the
+//! `transpose` when every reader of its output is such a `matmul`, so CoreML never produces
+//! a transposed float copy of the weight.
 //!
-//! - A program that carries state always compiles from a URL. There the lowering emits MIL
-//!   `matmul` with `transpose_y = true` over the constant and omits the `transpose` when
-//!   every reader of its output is such a `matmul`. The logits are the bits of the literal
-//!   chain, and CoreML does not have to produce a transposed float copy of the weight.
-//! - A stateless program may be loaded in memory, where CoreML evaluates the literal chain
-//!   and its `transpose` on every dispatch. A `matmul` that read the constant directly
-//!   would round float16 results differently there, so the `transpose` stays in the model
-//!   and reads the constant: the logits are again the bits of the literal chain. The URL
-//!   compiler folds that `transpose`.
+//! The constant is bit-identical to the literal chain; what a reader computes from it is
+//! not guaranteed to be. CoreML evaluates a `matmul` (or `gemm`) over a constant weight with
+//! another kernel than one over a weight computed at run time, and float16 results can
+//! differ in rounding from the literal lowering, on the in-memory route and through the URL
+//! compiler. A reader of the compressed constant returns what the same reader returns over a
+//! plain float constant of those values on that route.
 
 use std::collections::{HashMap, HashSet};
 
@@ -544,14 +540,9 @@ fn scale_values(
 /// lowering. New scale and offset constants are appended to the operand table in chain
 /// order, so their place in the weights blob is the same on every conversion.
 ///
-/// With `transpose_y`, a `matmul` whose second operand is the rank-2 `transpose` of a
-/// rewritten constant reads the constant itself (see the module documentation for when
-/// that returns the bits of the literal chain).
-pub(crate) fn apply(
-    graph: &mut GraphInfo,
-    chains: Vec<Chain>,
-    transpose_y: bool,
-) -> BlockwiseConstants {
+/// A `matmul` whose second operand is the rank-2 `transpose` of a rewritten constant reads
+/// the constant itself with `transpose_y` (see the module documentation).
+pub(crate) fn apply(graph: &mut GraphInfo, chains: Vec<Chain>) -> BlockwiseConstants {
     let mut plan = BlockwiseConstants::default();
     if chains.is_empty() || graph.operands.len() + 2 * chains.len() >= u32::MAX as usize {
         return plan;
@@ -646,9 +637,7 @@ pub(crate) fn apply(
         index += 1;
         !dropped[index - 1]
     });
-    if transpose_y {
-        plan.transposes = transposed_readers(graph, &plan.constants);
-    }
+    plan.transposes = transposed_readers(graph, &plan.constants);
     plan
 }
 
@@ -709,8 +698,7 @@ fn transposed_readers(graph: &GraphInfo, constants: &HashSet<u32>) -> HashMap<u3
     transposes
 }
 
-/// [`find_chains`] and [`apply`] (with `transpose_y`) on a copy of `graph`; `None` when
-/// there is no chain.
+/// [`find_chains`] and [`apply`] on a copy of `graph`; `None` when there is no chain.
 #[cfg(test)]
 fn rewrite(graph: &GraphInfo) -> Option<(GraphInfo, BlockwiseConstants)> {
     let chains = find_chains(graph);
@@ -718,7 +706,7 @@ fn rewrite(graph: &GraphInfo) -> Option<(GraphInfo, BlockwiseConstants)> {
         return None;
     }
     let mut rewritten = graph.clone();
-    let plan = apply(&mut rewritten, chains, true);
+    let plan = apply(&mut rewritten, chains);
     Some((rewritten, plan))
 }
 
@@ -1867,35 +1855,20 @@ mod tests {
     }
 
     #[test]
-    fn a_stateful_program_reads_the_constant_with_transpose_y() {
-        let lowered = projected_chain(true, [64, 2, 32]);
-        let [leaf] = lowered.of_type(BLOCKWISE)[..] else {
-            panic!("one blockwise constant")
-        };
-        let [product] = lowered.of_type("matmul")[..] else {
-            panic!("one matmul")
-        };
-        assert_eq!(bound_name(product, "y"), leaf.outputs[0].name);
-        assert!(bound_bool(product, "transpose_y"));
-        assert!(!bound_bool(product, "transpose_x"));
-        assert!(lowered.of_type("transpose").is_empty());
-    }
-
-    #[test]
-    fn a_stateless_program_keeps_the_transpose_over_the_constant() {
-        let lowered = projected_chain(false, [64, 2, 32]);
-        let [leaf] = lowered.of_type(BLOCKWISE)[..] else {
-            panic!("one blockwise constant")
-        };
-        let [transpose] = lowered.of_type("transpose")[..] else {
-            panic!("one transpose")
-        };
-        assert_eq!(bound_name(transpose, "x"), leaf.outputs[0].name);
-        let [product] = lowered.of_type("matmul")[..] else {
-            panic!("one matmul")
-        };
-        assert_eq!(bound_name(product, "y"), transpose.outputs[0].name);
-        assert!(!bound_bool(product, "transpose_y"));
+    fn a_transposed_matmul_reads_the_constant_with_transpose_y() {
+        for stateful in [false, true] {
+            let lowered = projected_chain(stateful, [64, 2, 32]);
+            let [leaf] = lowered.of_type(BLOCKWISE)[..] else {
+                panic!("one blockwise constant")
+            };
+            let [product] = lowered.of_type("matmul")[..] else {
+                panic!("one matmul")
+            };
+            assert_eq!(bound_name(product, "y"), leaf.outputs[0].name);
+            assert!(bound_bool(product, "transpose_y"));
+            assert!(!bound_bool(product, "transpose_x"));
+            assert!(lowered.of_type("transpose").is_empty());
+        }
     }
 
     #[test]
@@ -1956,20 +1929,10 @@ mod tests {
             assert_eq!(bound_name(lookup, "x"), table);
             let products = lowered.of_type("matmul");
             assert_eq!(products.len(), 2);
-            let transposes = lowered.of_type("transpose");
-            if stateful {
-                assert!(transposes.is_empty());
-                for product in products {
-                    assert_eq!(bound_name(product, "y"), table);
-                    assert!(bound_bool(product, "transpose_y"));
-                }
-            } else {
-                assert_eq!(transposes.len(), 2);
-                for (product, transpose) in products.iter().zip(transposes) {
-                    assert_eq!(bound_name(transpose, "x"), table);
-                    assert_eq!(bound_name(product, "y"), transpose.outputs[0].name);
-                    assert!(!bound_bool(product, "transpose_y"));
-                }
+            assert!(lowered.of_type("transpose").is_empty());
+            for product in products {
+                assert_eq!(bound_name(product, "y"), table);
+                assert!(bound_bool(product, "transpose_y"));
             }
             assert_eq!(
                 lowered.blob(bound_name(leaf, "data")),

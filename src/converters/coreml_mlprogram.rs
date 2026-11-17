@@ -5346,9 +5346,8 @@ impl CoremlMlProgramConverter {
             // MatMul operation: x, y, transpose_x, transpose_y
             // CoreML requires transpose parameters, WebNN doesn't have them so default to false
             Operation::Matmul { b, .. } => {
-                // In a program that carries state, `matmul(x, transpose(W))` over a
-                // blockwise constant reads `W` itself, so CoreML does not have to produce a
-                // transposed float copy of the weight.
+                // `matmul(x, transpose(W))` over a blockwise constant reads `W` itself, so
+                // CoreML does not have to produce a transposed float copy of the weight.
                 let transposed_weight = graph.blockwise.transposed_source(*b);
                 if input_names.len() >= 2 {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
@@ -12951,15 +12950,7 @@ impl CoremlMlProgramConverter {
         let blockwise = if chains.is_empty() {
             Default::default()
         } else {
-            // A program that carries state always compiles from a URL, where `matmul` with
-            // `transpose_y` over the constant returns the bits of the literal transpose. A
-            // stateless program may load in memory, where it would not; it keeps the
-            // `transpose` over the constant.
-            super::coreml_blockwise::apply(
-                folded.get_or_insert_with(|| graph_info.clone()),
-                chains,
-                !pairs.is_empty(),
-            )
+            super::coreml_blockwise::apply(folded.get_or_insert_with(|| graph_info.clone()), chains)
         };
         let graph_info = folded.as_ref().unwrap_or(graph_info);
         let mut lowering_graph = LoweringGraph::new(graph_info)?;
