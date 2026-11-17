@@ -110,6 +110,31 @@ selected with `RustNNOptions::coreml.float16_precision`:
 `docs/development/converters.md` lists the lowering rules for both. The WPT harness selects the
 lowering with `WPT_COREML_FLOAT16=native|exact` and the device with `WPT_COREML_DEVICE`.
 
+## Quantized constant weights
+
+A graph can author a weight matrix as an explicit dequantization of constants: an `int8` or
+`uint8` constant `[n, k]`, `cast` to `float16` or `float32`, an optional `sub` of a scalar zero
+point, `reshape` to blocks `[n, g, k / g]`, `mul` by a constant scale `[n, g, 1]` and `reshape`
+back to `[n, k]`. The converter keeps such a weight quantized. The weights blob holds the
+original bytes, one scale per block and, for a nonzero zero point, one offset per block, and
+the model declares a `constexpr_blockwise_shift_scale` constant that CoreML decompresses
+itself, instead of evaluating the chain into a float copy of every weight while it compiles or
+loads the model. Nothing has to be enabled, and a graph without such a chain converts as
+before. [Converter internals](https://rustnn.github.io/rustnn/development/converters/#coreml)
+lists what is recognized.
+
+- The values are those of the chain: `(q - zero) * scale`, rounded once in its float type. On
+  a CPU request, in memory and through the URL compiler, the outputs of a float16 language
+  model were the same bits as with the literal chain (M4 Max, macOS 27.3).
+- A table that a `gather` and an output projection `matmul(x, transpose(W))` share is stored
+  once.
+- A graph that [carries state](#carrying-recurrent-state-inside-the-model) reads the constant
+  in `matmul` with `transpose_y`. A stateless graph keeps its `transpose` over the constant:
+  on the in-memory route CoreML evaluates that `transpose` on every dispatch, as it did for
+  the whole chain before, because a `matmul` reading the constant directly rounds float16
+  results differently there.
+- With `float16_precision = Exact`, a graph with float16 operands keeps the literal chain.
+
 ## Compiled-bundle cache
 
 `MLModel.compileModel` is the slow step of a build on small devices: tens of seconds for a

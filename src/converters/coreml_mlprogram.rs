@@ -304,6 +304,9 @@ struct LoweringGraph<'a> {
     /// Carried-state pairs kept inside the model as CoreML states; empty for a stateless
     /// conversion.
     carried: CarriedStates,
+    /// Constant dequantization chains rewritten by [`super::coreml_blockwise`]; empty when
+    /// the graph has none.
+    blockwise: super::coreml_blockwise::BlockwiseConstants,
 }
 
 /// Lowering plan for the carried-state pairs of one conversion (see
@@ -412,6 +415,7 @@ impl<'a> LoweringGraph<'a> {
             ),
             exact_float16: false,
             carried: CarriedStates::default(),
+            blockwise: Default::default(),
         })
     }
 }
@@ -3746,6 +3750,57 @@ impl CoremlMlProgramConverter {
         Ok(())
     }
 
+    /// Emit `constexpr_blockwise_shift_scale` (output = scale * (data - offset)) for a
+    /// `dequantizeLinear` synthesized by [`super::coreml_blockwise`]. The iOS 18 operation
+    /// takes its parameters as inputs bound to `const` operations: the stored int8/uint8
+    /// data, a scale of the same rank whose dimensions divide the data's, and an optional
+    /// offset of the scale's shape in the data's type.
+    fn emit_constexpr_blockwise_shift_scale(
+        graph: &LoweringGraph<'_>,
+        op: &Operation,
+        overrides: &HashMap<u32, String>,
+        main_block: &mut Block,
+    ) -> Result<(), GraphError> {
+        let (
+            Operation::DequantizeLinear {
+                input,
+                scale,
+                zero_point,
+                ..
+            },
+            Some(output_id),
+        ) = (op, op.output_operand())
+        else {
+            return Err(GraphError::ConversionFailed {
+                format: "coreml_mlprogram".to_string(),
+                reason: "blockwise constant is not a single-output dequantizeLinear".to_string(),
+            });
+        };
+        let (_, output_type) = Self::create_output_value(graph, output_id, overrides)?;
+        let mut inputs = HashMap::from([
+            (
+                "data".to_string(),
+                Self::create_name_argument(operand_name(graph, *input)),
+            ),
+            (
+                "scale".to_string(),
+                Self::create_name_argument(operand_name(graph, *scale)),
+            ),
+        ]);
+        if let Some(zero_point) = zero_point {
+            inputs.insert(
+                "offset".to_string(),
+                Self::create_name_argument(operand_name(graph, *zero_point)),
+            );
+        }
+        main_block.operations.push(Self::create_mil_operation(
+            "constexpr_blockwise_shift_scale",
+            inputs,
+            vec![output_type],
+        ));
+        Ok(())
+    }
+
     /// Immediate int32 scalar `Value` (attribute form of `create_immediate_int`).
     fn constexpr_axis_value(axis: u32) -> crate::protos::coreml::mil_spec::Value {
         use crate::protos::coreml::mil_spec::{
@@ -5273,10 +5328,20 @@ impl CoremlMlProgramConverter {
 
             // MatMul operation: x, y, transpose_x, transpose_y
             // CoreML requires transpose parameters, WebNN doesn't have them so default to false
-            Operation::Matmul { .. } => {
+            Operation::Matmul { b, .. } => {
+                // In a program that carries state, `matmul(x, transpose(W))` over a
+                // blockwise constant reads `W` itself, so CoreML does not have to produce a
+                // transposed float copy of the weight.
+                let transposed_weight = graph.blockwise.transposed_source(*b);
                 if input_names.len() >= 2 {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
-                    inputs.insert("y".to_string(), Self::create_argument(&input_names[1]));
+                    inputs.insert(
+                        "y".to_string(),
+                        match transposed_weight {
+                            Some(weight) => Self::create_argument(&operand_name(graph, weight)),
+                            None => Self::create_argument(&input_names[1]),
+                        },
+                    );
                 }
 
                 // Add transpose_x parameter (required by CoreML, defaults to false)
@@ -5288,7 +5353,7 @@ impl CoremlMlProgramConverter {
                 // Add transpose_y parameter (required by CoreML, defaults to false)
                 inputs.insert(
                     "transpose_y".to_string(),
-                    Self::create_immediate_bool(false),
+                    Self::create_immediate_bool(transposed_weight.is_some()),
                 );
             }
 
@@ -6964,6 +7029,14 @@ impl CoremlMlProgramConverter {
         for op in operations {
             let op_lower = op.op_type().to_lowercase();
             if matches!(op_lower.as_str(), "quantizelinear" | "dequantizelinear") {
+                // A blockwise constant binds its data, scale and offset constants as they
+                // are stored.
+                if op
+                    .output_operand()
+                    .is_some_and(|output| graph_info.blockwise.is_constant(output))
+                {
+                    continue;
+                }
                 let input_ids = op.input_operands();
                 // Skip decomposed quantize/dequantize ops: they consume scale/zero_point in
                 // their native dtype and shape (see emit_*_decomposition), so the per-channel
@@ -7385,6 +7458,16 @@ impl CoremlMlProgramConverter {
         // Convert all operations to MIL operations
         for op in operations {
             let op_type_lower = op.op_type().to_lowercase();
+
+            // Every reader of this transposed blockwise constant is a `matmul` that reads
+            // the constant itself with `transpose_y`.
+            if matches!(op, Operation::Transpose { .. })
+                && op
+                    .output_operand()
+                    .is_some_and(|output| graph_info.blockwise.omits_transpose(output))
+            {
+                continue;
+            }
 
             if let Operation::RoundEven { input, .. } = op {
                 let output_id =
@@ -10547,6 +10630,24 @@ impl CoremlMlProgramConverter {
                 continue;
             }
 
+            // A constant dequantization chain recognized by `coreml_blockwise` stays one
+            // compressed constant.
+            if let Some(output_id) = op.output_operand()
+                && graph_info.blockwise.is_constant(output_id)
+            {
+                Self::emit_constexpr_blockwise_shift_scale(
+                    graph_info,
+                    op,
+                    &operand_name_overrides,
+                    &mut main_block,
+                )?;
+                if let Some((pending_ops, transposed_name)) = deferred_transposes.remove(&output_id)
+                {
+                    main_block.operations.extend(pending_ops);
+                    operand_name_overrides.insert(output_id, transposed_name);
+                }
+                continue;
+            }
             // dequantize over constant weights becomes constexpr_affine_dequantize:
             // Espresso keeps the packed representation through compilation instead of
             // constant-folding into a dense float tensor.
@@ -12761,11 +12862,41 @@ impl CoremlMlProgramConverter {
         // both float16 lowerings: the Neural Engine admits `matmul(x, const)` but not
         // `matmul(x, transpose(const))`, and the literal lowering would also transpose the
         // weight on every dispatch.
-        let folded = super::coreml_constant_fold::fold_constant_views(graph_info);
+        let mut folded = super::coreml_constant_fold::fold_constant_views(graph_info);
+        // Then keep blockwise-quantized weights quantized: each constant dequantization
+        // chain becomes one `dequantizeLinear` that lowers to a compressed constant. The
+        // exact float16 lowering of a graph with float16 operands is excluded: in its
+        // precision pipeline the compressed constant returns +0 where the literal chain
+        // returns -0 (a zero difference, or a zero scale, with a negative sign). Without a
+        // float16 operand the exact lowering is the native one and takes the rewrite too.
+        let exact = precision == crate::mlcontextoptions::CoremlFloat16Precision::Exact;
+        let chains = if exact
+            && graph_info
+                .operands
+                .iter()
+                .any(|operand| operand.descriptor.data_type == DataType::Float16)
+        {
+            Vec::new()
+        } else {
+            super::coreml_blockwise::find_chains(folded.as_ref().unwrap_or(graph_info))
+        };
+        let blockwise = if chains.is_empty() {
+            Default::default()
+        } else {
+            // A program that carries state always compiles from a URL, where `matmul` with
+            // `transpose_y` over the constant returns the bits of the literal transpose. A
+            // stateless program may load in memory, where it would not; it keeps the
+            // `transpose` over the constant.
+            super::coreml_blockwise::apply(
+                folded.get_or_insert_with(|| graph_info.clone()),
+                chains,
+                !pairs.is_empty(),
+            )
+        };
         let graph_info = folded.as_ref().unwrap_or(graph_info);
         let mut lowering_graph = LoweringGraph::new(graph_info)?;
-        lowering_graph.exact_float16 =
-            precision == crate::mlcontextoptions::CoremlFloat16Precision::Exact;
+        lowering_graph.exact_float16 = exact;
+        lowering_graph.blockwise = blockwise;
         lowering_graph.carried = CarriedStates::new(&lowering_graph, pairs)?;
         let graph_info = &lowering_graph;
         let mut weight_builder = super::WeightFileBuilder::new();
