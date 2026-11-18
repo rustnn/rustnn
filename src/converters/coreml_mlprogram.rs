@@ -12975,6 +12975,7 @@ impl CoremlMlProgramConverter {
     /// where no temporary file can be created). The model and the weight bytes are those of
     /// the borrowing conversion. Afterwards `graph` holds the rewritten operations; the
     /// caller drops its constants before reading the weight file back.
+    #[cfg_attr(not(any(feature = "coreml-runtime", test)), allow(dead_code))]
     pub(crate) fn convert_owned(
         &self,
         graph: &mut GraphInfo,

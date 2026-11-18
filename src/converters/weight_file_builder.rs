@@ -44,6 +44,8 @@ pub struct WeightFileBuilder {
 }
 
 /// Where the file is assembled. The offsets and the bytes are the same for both.
+// Only the CoreML backend asks for the file; a converter-only build has no caller.
+#[cfg_attr(not(any(feature = "coreml-runtime", test)), allow(dead_code))]
 enum Sink {
     Memory(Vec<u8>),
     /// An anonymous temporary file and its length so far. A language model's weights are
@@ -140,6 +142,7 @@ impl WeightFileBuilder {
 
     /// Assembles the file in an anonymous temporary file instead of on the heap. Fails
     /// where the process cannot create one (a sandbox, a full disk); use [`Self::new`] then.
+    #[cfg_attr(not(any(feature = "coreml-runtime", test)), allow(dead_code))]
     pub(crate) fn file_backed() -> Result<Self, GraphError> {
         let file = tempfile::tempfile().map_err(io_error)?;
         Self::with_sink(Sink::File(std::io::BufWriter::new(file), 0))
