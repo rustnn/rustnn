@@ -68,7 +68,7 @@ To compare with the reference runs, use the fixed prompt and plain greedy decodi
 ```
 
 Other switches: `--carry state|tensors`, `--units cpu|gpu|npu`, `--route auto|native|export`,
-`--cache DIR` (compiled-bundle cache), `--window N` and `--layers N` (authoring only),
+`--cache DIR` (compiled-bundle cache), `--window N` (authoring only),
 `--prompt TEXT`, `--repetition-penalty`. `--help` lists them.
 
 ## 3. Run it on an iPhone
@@ -116,33 +116,32 @@ WATCHOS_DEPLOYMENT_TARGET=11.0 CFLAGS_aarch64_apple_watchos=-DCFG_TARGET_OS_ios 
   emits ELF directives; the define selects the Mach-O form.
 - `coreml-export` is required: watchOS has no model compiler, so the bundle is written by the
   pure-Rust exporter ([Compile routes](../integration/coreml.md#compile-routes)).
-- `aarch64-apple-watchos` is the arm64 slice, which the Apple Watch Series 10 on watchOS 27.2
+- `aarch64-apple-watchos` is the arm64 slice, which the Apple Watch Series 10 on watchOS 27.3
   runs. Older watches such as the Apple Watch SE 2nd generation are `arm64_32-apple-watchos`,
   a tier 3 target that needs `-Zbuild-std` and was not tried with this example.
-- watchOS suspends an app whose screen is asleep. Keep the watch awake during a run, or
-  ignore the timing.
+- watchOS suspends an app soon after its screen sleeps. The host holds an extended runtime
+  session (the packaged app declares the `mindfulness` background mode for it), so a run
+  continues with the screen off. The watch still has to be unlocked and awake at launch.
 
-**The full model does not fit an Apple Watch yet.** On the Apple Watch Series 10 (watchOS
-27.2) the process is killed while the model loads. An app there was granted 299 MiB when
-measured on 2026-10-30; no jetsam report was pulled to confirm the reason. The footprint on
-the Mac shows why:
+The full model runs on an Apple Watch Series 10 at about 20 tokens per second and returns the
+Mac's tokens. Its memory is tight. A watch app was granted 299 MiB when measured on
+2026-10-30, and the run peaks at 292 MiB:
 
-| Phase (M4 Max, state, auto) | Full model | `--layers 2` |
+| Phase, physical footprint | Apple Watch Series 10 | M4 Max |
 |---|---|---|
-| After the graph is loaded | 304 MiB | 97 MiB |
-| Peak during the build | 626 MiB | 156 MiB |
-| While decoding | 319 MiB | 157 MiB |
+| Peak while the graph loads | 292 MiB | 304 MiB |
+| After the graph is loaded | 154 MiB | 304 MiB |
+| Peak during the build | below the load peak | 486 MiB |
+| While decoding | 29 MiB | 179 MiB |
 
-The bundle holds 142 MB of weights. Loading it keeps two copies on the heap for a moment
-(the file and the per-tensor constants), and the build adds a copy of the graph and the
-weights blob. Core ML itself maps its weights file and adds almost nothing: while decoding,
-9 MB of the heap is in use and the rest is freed memory the allocator has not returned. So
-the limit is rustnn's transient copies, not the model. Keeping the constants file-backed
-through load, conversion and export is the fix, and it is not in this repository yet.
-
-A two-layer cut of the model (`--layers 2` when authoring) runs on the watch end to end and
-returns the Mac's tokens, which shows the build, the export route and the state carry work
-there.
+The bundle holds 142 MB of weights. The load peak is the `.webnn` loader holding the weights
+file and the per-tensor constants at the same moment. The build no longer adds to it: the
+CoreML backend converts a large graph in place and assembles its weight blob in a temporary
+file ([converter notes](../development/converters.md)). Core ML maps its weights file, which
+is why decoding needs 29 MiB. macOS and iOS keep freed heap pages in the process, so their
+later figures stay high; watchOS returns them. One of three full-model runs on the watch
+ended without a receipt, which the 7 MiB of headroom would explain; a loader that reads one
+tensor at a time is the remaining step.
 
 ## Reference runs
 
@@ -159,7 +158,8 @@ given. Rates move with thermal state; the token hash is what should match.
 | | tensors, auto | 8.7 s | 23 tok/s | 843 MiB | `e2b450fbb2d994c6` |
 | iPhone XS Max (A12), iOS 18.7.10 | tensors, export | 3.4 s | 23 tok/s | 724 MiB | `2db53a2d95685f0b` |
 | | tensors, auto | 9.9 s | 19 tok/s | 841 MiB | `2db53a2d95685f0b` |
-| Apple Watch Series 10, watchOS 27.2 | state, auto, `--layers 2`, 16 tokens | 0.7 s | not timed | 215 MiB | `deb9a7079c2fa62e`, as on the Mac |
+| iPhone 16 Pro Max, iOS 27.3 | state, auto | 2.7 s | 142 tok/s | 788 MiB | `2db53a2d95685f0b` |
+| Apple Watch Series 10, watchOS 27.3 | state, auto | 34 s cold, 8 s with Core ML's cache warm | 18 to 20 tok/s (2 runs) | 435 MiB | `2db53a2d95685f0b` |
 
 What to expect when your numbers differ:
 
@@ -167,7 +167,7 @@ What to expect when your numbers differ:
   slower and rounds float16 differently, hence the second hash
   ([How a graph runs](../integration/coreml.md#how-a-graph-runs)).
 - With `--carry state` the model fails to load on iOS 18.7.10 (Core ML error -14 on the A12
-  above, also for the two-layer cut). Use `--carry tensors` there. The cause is not known.
+  above, also for a model cut to two layers). Use `--carry tensors` there. The cause is not known.
 - With the default chat prompt and repetition penalty, the Mac and the A13 produce different
   replies after the first tokens. Both are coherent. Float16 kernels differ between
   processors, and a penalized near-tie can go either way; the fixed prompt above agrees on

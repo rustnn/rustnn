@@ -228,13 +228,8 @@ pub fn author(
     builder: &mut MLGraphBuilder<'_, '_>,
     checkpoint: &safetensors::SafeTensors<'_>,
     window: usize,
-    layers: usize,
 ) -> Result<BTreeMap<String, MLOperand>> {
     ensure!(window >= 2, "the window needs at least two positions");
-    ensure!(
-        (1..=LAYERS).contains(&layers),
-        "the model has {LAYERS} layers"
-    );
     let token = builder.input("token", &descriptor(MLOperandDataType::Int32, &[1, 1]))?;
     let cos = builder.input("cos", &descriptor(F, &[1, 1, 1, HEAD]))?;
     let sin = builder.input("sin", &descriptor(F, &[1, 1, 1, HEAD]))?;
@@ -277,7 +272,7 @@ pub fn author(
     let mut residual = a.builder.cast(row, F)?;
     let mut outputs = BTreeMap::new();
 
-    for layer in 0..layers {
+    for layer in 0..LAYERS {
         let prefix = format!("model.layers.{layer}");
         let normalized = a.rms_norm(residual, &format!("{prefix}.input_layernorm.weight"))?;
         let normalized = a.builder.cast(normalized, H)?;
@@ -395,13 +390,12 @@ pub fn save(
     builder: &mut MLGraphBuilder<'_, '_>,
     checkpoint: &Path,
     window: usize,
-    layers: usize,
     bundle: &Path,
 ) -> Result<()> {
     let bytes = std::fs::read(checkpoint.join("model.safetensors"))
         .with_context(|| format!("{}/model.safetensors", checkpoint.display()))?;
     let tensors = safetensors::SafeTensors::deserialize(&bytes)?;
-    let authored = author(builder, &tensors, window, layers)?;
+    let authored = author(builder, &tensors, window)?;
     std::fs::create_dir_all(bundle)?;
     let outputs = authored
         .iter()

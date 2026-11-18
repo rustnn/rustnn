@@ -417,8 +417,8 @@ On watchOS, tvOS and visionOS the published `objc` 0.2 crate uses its GNUstep lo
 (`objc_msg_lookup`, `objc_msg_lookup_super`), which Apple's runtime does not export. The shim
 (`src/executors/coreml_shim.mm`) defines both on those targets with
 `class_getMethodImplementation`, so no `[patch.crates-io]` entry is needed. Validated on
-2026-11-17 on an Apple Watch Series 10 (watchOS 27.2, `aarch64-apple-watchos`) with a
-two-layer cut of SmolLM2: state carry, the Rust export route and the Mac's tokens. The `psm`
+2026-11-17 on an Apple Watch Series 10 (watchOS 27.3, `aarch64-apple-watchos`) with
+SmolLM2-135M: state carry, the Rust export route and the Mac's tokens. The `psm`
 crate needs `CFLAGS_aarch64_apple_watchos=-DCFG_TARGET_OS_ios` to assemble for watchOS. These
 targets are not built in CI.
 

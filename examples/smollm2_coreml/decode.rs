@@ -64,10 +64,6 @@ struct Args {
     /// Key/value positions kept by the graph (authoring only).
     #[arg(long, default_value_t = 512)]
     window: usize,
-    /// Author only the first layers of the model (authoring only). The output is not
-    /// meaningful; this is for bringing up a device that cannot hold the whole model.
-    #[arg(long, default_value_t = author::LAYERS)]
-    layers: usize,
     #[arg(long, value_enum, default_value = "state")]
     carry: Carry,
     #[arg(long, value_enum, default_value = "cpu")]
@@ -236,13 +232,7 @@ fn run(args: &Args) -> Result<Value> {
         let started = Instant::now();
         let mut context = MLContext::create(&context_options(args, &[]))?;
         let mut builder = MLGraphBuilder::new(&mut context)?;
-        author::save(
-            &mut builder,
-            checkpoint,
-            args.window,
-            args.layers,
-            &args.bundle,
-        )?;
+        author::save(&mut builder, checkpoint, args.window, &args.bundle)?;
         eprintln!(
             "authored {} in {:.1} s",
             args.bundle.display(),
@@ -261,7 +251,7 @@ fn run(args: &Args) -> Result<Value> {
     let started = Instant::now();
     let graph_info = rustnn::load_graph_from_path(args.bundle.join("model.webnn"))?;
     let graph_load_seconds = started.elapsed().as_secs_f64();
-    let footprint_after_graph_load = footprint_bytes().0;
+    let footprint_after_graph_load = footprint_bytes();
     let (inputs, outputs) = graph_info.io_binding_maps().context("graph I/O")?;
     let window = elements(inputs.get("mask").context("mask input")?)?;
     let mut pairs: Vec<(String, String)> = inputs
@@ -361,7 +351,8 @@ fn run(args: &Args) -> Result<Value> {
         "tokensPerSecond": tokens_per_second,
         "peakResidentBytesAfterBuild": peak_after_build,
         "peakResidentBytes": peak_resident_bytes(),
-        "footprintBytesAfterGraphLoad": footprint_after_graph_load,
+        "footprintBytesAfterGraphLoad": footprint_after_graph_load.0,
+        "peakFootprintBytesAfterGraphLoad": footprint_after_graph_load.1,
         "footprintBytesAfterBuild": footprint_after_build.0,
         "peakFootprintBytesAfterBuild": footprint_after_build.1,
         "footprintBytes": footprint_bytes().0,

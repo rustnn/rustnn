@@ -34,7 +34,13 @@ from pathlib import Path
 PLATFORMS = {
     # platform: (CFBundleSupportedPlatforms, UIDeviceFamily, extra Info.plist keys)
     "ios": ("iPhoneOS", [1, 2], {"LSRequiresIPhoneOS": True, "UILaunchScreen": {}}),
-    "watchos": ("WatchOS", [4], {"WKApplication": True, "WKWatchOnly": True}),
+    # The background mode lets the host hold an extended runtime session, so a run
+    # continues while the watch's screen is asleep.
+    "watchos": (
+        "WatchOS",
+        [4],
+        {"WKApplication": True, "WKWatchOnly": True, "WKBackgroundModes": ["mindfulness"]},
+    ),
 }
 
 
