@@ -1074,7 +1074,7 @@ webnn_graph "sample_graph" v1 {
   outputs { sum; }
 }"#;
 
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let sanitized = crate::loader::sanitize_webnn_identifiers(contents);
         let graph_json = webnn_graph::parser::parse_wg_text(&sanitized).unwrap();
         let graph_info = from_graph_json(&graph_json).unwrap();
@@ -1122,7 +1122,7 @@ webnn_graph "sample_graph" v1 {
 
     #[test]
     fn test_backend_hint() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(
             &MLContextOptions::new(MLPowerPreference::Default, true)
                 .with_rustnn_backend_hint(Backend::Onnx),
@@ -1137,7 +1137,7 @@ webnn_graph "sample_graph" v1 {
     }
     #[test]
     fn test_create_context() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;

@@ -126,10 +126,8 @@ fn push_backend_trials(
 }
 
 fn main() {
-    pretty_env_logger::init();
-
-    // Spans and events for the `log`-only runs this harness makes: same switch as the CLI, and
-    // nothing is printed unless `RUST_LOG` asks for it.
+    // Spans, events and `log` records: the same switch as the CLI, and nothing is printed
+    // unless `RUST_LOG` asks for it.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::builder()

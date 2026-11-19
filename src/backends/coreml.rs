@@ -1195,7 +1195,7 @@ mod test {
 
     #[test]
     fn coreml_relu_add_f32() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let Some(mut context) = coreml_context() else {
             return;
         };
@@ -1247,7 +1247,7 @@ mod test {
 
     #[test]
     fn coreml_in_memory_model_dispatch_and_drop_on_another_thread() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let Some(mut context) = coreml_context() else {
             return;
         };
@@ -1298,7 +1298,7 @@ mod test {
     #[test]
     #[cfg(not(feature = "trtx-runtime"))]
     fn coreml_url_model_dispatch_and_drop_on_another_thread() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let Some(mut context) = coreml_context() else {
             return;
         };
@@ -1340,7 +1340,7 @@ mod test {
 
     #[test]
     fn coreml_not_equal_uint8_promotes_inputs_and_executes() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let Some(mut context) = coreml_context() else {
             return;
         };
@@ -1378,7 +1378,7 @@ mod test {
 
     #[test]
     fn coreml_add_int32_byte_path() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let Some(mut context) = coreml_context() else {
             return;
         };
@@ -1437,7 +1437,7 @@ mod test {
     /// the freed memory happened to survive long enough to read.
     #[test]
     fn coreml_repeated_dispatch_provider_lifetime() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
 
         let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, [4].to_vec());
         for _ in 0..5 {
@@ -1589,7 +1589,7 @@ mod carried_state_tests {
 
     #[test]
     fn carried_state_matches_the_host_round_trip_and_resets() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let expected = [
             [2.0, 4.0, 6.0, 8.0],
             [3.0, 6.0, 9.0, 12.0],
