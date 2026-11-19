@@ -19,6 +19,8 @@ use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
 #[cfg(feature = "coreml-converter")]
+mod coreml_blockwise;
+#[cfg(feature = "coreml-converter")]
 mod coreml_constant_fold;
 #[cfg(feature = "coreml-converter")]
 mod coreml_mlprogram;

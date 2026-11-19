@@ -514,7 +514,7 @@ fn int_to_f16(value: i128) -> half::f16 {
     half::f16::from_f64(value as f64)
 }
 
-fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
+pub(super) fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
     if from == to {
         return Some(data.to_vec());
     }

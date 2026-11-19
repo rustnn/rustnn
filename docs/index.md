@@ -33,6 +33,7 @@ and [WPT dashboard](https://rustnn.github.io/rustnn/wpt-conformance/). See the
 |---|---|
 | [Getting Started](user-guide/getting-started.md) | Requirements, adding the crate, first graph, loading `.webnn` files, conversion |
 | [Examples](user-guide/examples.md) | The example programs in `examples/` and short recipes |
+| [SmolLM2 on Apple devices](user-guide/smollm2-on-apple-devices.md) | SmolLM2-135M from the Hugging Face checkpoint to a Mac, an iPhone and an Apple Watch, with reference runs |
 | [Troubleshooting](user-guide/troubleshooting.md) | Error messages by phase, their causes and fixes |
 | [API and Support Map](development/implementation-status.md) | Pointers to API contracts, unimplemented methods, backend support, and consolidated guides |
 | [Rust API Reference](https://rustnn.github.io/rustnn/api/rustnn/) | Generated rustdoc for every public item, deployed from `main`; locally `make docs-api` writes it to `target/doc/rustnn/` |
