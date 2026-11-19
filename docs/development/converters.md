@@ -139,6 +139,17 @@ Rules that hold for every converter:
   This adaptation currently applies to static shapes.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- A build whose graph has inputs and at least 32 MiB of constants converts it in place
+  (`CoremlMlProgramConverter::convert_owned`, called from `CoremlBuilder::build`, which owns
+  the graph). The constant fold and the blockwise rewrite then edit the caller's graph instead
+  of a clone, and `WeightFileBuilder::file_backed` assembles the weight blob in an anonymous
+  temporary file; the build drops the graph's constants before it reads the blob back. The
+  weights are then on the heap once at a time instead of three times. The model and the blob
+  are those of the borrowing `convert_with_carried_state`, which every other caller keeps
+  using; `the_in_place_conversion_matches_the_borrowing_one` compares them. Where no
+  temporary file can be created (a sandboxed process, a full disk) the blob stays in memory.
+  Chromium's `GraphBuilderCoreml::WeightsFileHandle` writes constants to the weights file
+  the same way.
 - Static float32 `add`, `sub`, `mul`, `div`, `pow`, `sin`, `cos` and `concat` expressions are evaluated before
   CoreML lowering when each result is at most 4 MiB. This avoids a BNNS compiler
   memory fault for broadcast sinusoidal positional embeddings followed by concat
@@ -157,6 +168,39 @@ Rules that hold for every converter:
   stored payload (float16 weights read as float32 stay float16 in the weight blob), and casts
   that WebNN leaves implementation-defined (a float whose truncation does not fit the integer
   target, or NaN) stay in the graph.
+- A constant dequantization chain is kept as one compressed constant (`coreml_blockwise.rs`,
+  applied after the constant fold on the same copy of the graph). The chain is a `cast` of an
+  int8 or uint8 constant `[n, k]` to float16 or float32, an optional `sub` of a one-element
+  constant zero point (an integer in the range of the stored type), a `reshape` to
+  `[n, g, w]`, a `mul` in either operand order by a constant scale that does not vary inside
+  a block (`[n, g, 1]`, or a shape that broadcasts to it; read through at most one `cast` and
+  one `reshape`), and a `reshape` back to `[n, k]`. It becomes one `dequantizeLinear` over
+  constants that is emitted as MIL `constexpr_blockwise_shift_scale`: the weights blob keeps
+  the stored bytes, a `[n', g']` scale in the chain's float type and, for a nonzero zero
+  point, an offset of that shape in the stored type, and CoreML decompresses the constant
+  instead of evaluating the chain into a float copy.
+  Every intermediate of the chain must be read by the chain alone and none may be a graph
+  output; a graph that does not match is lowered as before, and an authored `dequantizeLinear`
+  keeps its own lowering. The constant is `(q - zero) * scale` rounded once in the chain's
+  float type, as in the literal chain (the module documentation has the argument, and
+  `tests/test_coreml_blockwise_constants.rs` reads the constant back through a `gather` and
+  compares the bits on the runtime for both float types and both compile routes).
+  - The reader `matmul(x, transpose(W))` is emitted as `matmul` with `transpose_y = true`
+    over the constant, and the `transpose` is omitted when only such `matmul`s read it. A
+    table shared by a `gather` and an output projection is one stored constant.
+  - The bit-identity is a property of the constant, not of its readers. CoreML evaluates a
+    `matmul` or `gemm` over a constant weight with another kernel than one over a weight
+    computed at run time, so float16 results can differ in rounding from the literal
+    lowering on either load route. The same test checks a dense `matmul` over the constant
+    against a host reference within float rounding, not bit for bit.
+  - Where the cost goes depends on the load route. Through the URL compiler the literal
+    chain was evaluated at compile time into a float copy, and the compressed constant
+    removes that. On the in-memory route the literal chain was evaluated on every dispatch;
+    with the compressed constant the load pays for the decompression once and dispatch
+    gets faster.
+  - The exact float16 lowering of a graph with float16 operands keeps the literal chain: in
+    its Pipeline the compressed constant returned `+0` where the literal chain returns `-0`
+    (macOS 27.3, CPU).
 - WebNN names need not be MIL identifiers, and its input/output namespaces are independent.
   Unsafe or colliding names receive unique physical identifiers. Creator-defined
   `rustnn.webnn.input_aliases` and `rustnn.webnn.output_aliases` JSON mappings preserve

@@ -50,7 +50,16 @@ use crate::operators::Operation;
 /// Returns a copy of `graph` with every foldable view of a constant folded, or `None` when
 /// the graph has nothing to fold (the caller then lowers the original without cloning it).
 pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
-    let has_candidate = graph.operations.iter().any(|operation| {
+    if !has_candidate(graph) {
+        return None;
+    }
+    let mut folded = graph.clone();
+    fold_constant_views_in_place(&mut folded).then_some(folded)
+}
+
+/// Whether any operation is a view or float expression of a constant that could fold.
+fn has_candidate(graph: &GraphInfo) -> bool {
+    graph.operations.iter().any(|operation| {
         matches!(
             operation,
             Operation::Transpose { .. }
@@ -71,12 +80,15 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
                 .input_operands()
                 .first()
                 .is_some_and(|&input| graph.constant_operand_ids_to_handles.contains_key(&input))
-    });
-    if !has_candidate {
-        return None;
-    }
+    })
+}
 
-    let mut folded = graph.clone();
+/// [`fold_constant_views`] on a graph the caller owns, without the copy. Returns whether
+/// anything was folded; the graph is unchanged when nothing was.
+pub(crate) fn fold_constant_views_in_place(folded: &mut GraphInfo) -> bool {
+    if !has_candidate(folded) {
+        return false;
+    }
     let mut use_count: HashMap<u32, usize> = HashMap::new();
     for operation in &folded.operations {
         for id in operation
@@ -95,9 +107,9 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
     let operations = std::mem::take(&mut folded.operations);
     let mut kept = Vec::with_capacity(operations.len());
     for operation in operations {
-        let candidate = fold_one(&folded, &operation)
+        let candidate = fold_one(folded, &operation)
             .map(|(input, output, data)| (vec![input], output, data))
-            .or_else(|| fold_float_expression(&folded, &operation));
+            .or_else(|| fold_float_expression(folded, &operation));
         let Some((inputs, output, data)) = candidate else {
             kept.push(operation);
             continue;
@@ -120,7 +132,7 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
         }
     }
     folded.operations = kept;
-    changed.then_some(folded)
+    changed
 }
 
 /// The folded payload of one operation, with its input and output operand indices, when the
@@ -514,7 +526,7 @@ fn int_to_f16(value: i128) -> half::f16 {
     half::f16::from_f64(value as f64)
 }
 
-fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
+pub(super) fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
     if from == to {
         return Some(data.to_vec());
     }
