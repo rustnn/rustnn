@@ -6,6 +6,7 @@
 | `wpt-conformance.yml` | push, pull request | WPT conformance suites: ONNX Runtime, Burn CPU and LiteRT on Linux (LiteRT non-blocking), CoreML on macOS; uploads JSON and HTML reports |
 | `wpt-conformance-nightly.yml` | schedule, manual | Full WPT run with reports, then builds the documentation site with rustdoc under `/api/` and the conformance dashboard under `/wpt-conformance/`, and deploys to GitHub Pages |
 | `wpt-sync.yml` | weekly (Monday 03:00 UTC), manual | Bumps `WPT_REVISION` to the current upstream WPT revision, regenerates the expected-failure lists for LiteRT, ONNX Runtime and CoreML against it and opens a pull request with the diff |
+| `onnxruntime-availability.yml` | daily (05:00 UTC), manual | Only acts while the outage switch `.github/onnxruntime-unavailable` exists: tries `make onnxruntime-download`, and once the library can be fetched again runs the ONNX WPT suite and opens a pull request that deletes the switch |
 | `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn revision and enforces a minimum pass rate |
 | `docs.yml` | push to `main` (docs, `mkdocs.yml`, `src/`, `Cargo.toml`, `Makefile`), pull request, manual | MkDocs strict build, rustdoc embedded under `/api/`, cached WPT report embedded, deploy to GitHub Pages from `main` |
 | `docs-pr.yml` | pull request touching docs | MkDocs strict build, rustdoc build, link check, status comment on the PR |
@@ -44,6 +45,22 @@
 - `benchmark-coreml-kv` runs self-contained attention/cache chaining by default; an external
   model/reference fixture is optional. macOS CI runs its numerical and cache-content gates
   via `make test-coreml-kv-benchmark`, without asserting a performance threshold.
+
+## ONNX Runtime outage switch
+
+`.github/onnxruntime-unavailable` disables the steps that execute ONNX Runtime while its
+release archives cannot be downloaded: the ONNX job in `wpt-conformance.yml` prints a warning
+and skips its run (the job stays green without testing anything), and `wpt-sync.yml` skips the
+ONNX expected-failure sync, which would otherwise complete on Burn CPU alone and empty
+`onnx_expected_failures.txt`. The `cargo check --features onnx-runtime` steps do not need the
+library and keep running.
+
+`onnxruntime-availability.yml` probes the download daily in a job with a read-only token and,
+once it works, opens the pull request that deletes the file from a second job that never
+touches the downloaded library. The switch lives outside `.github/workflows/` because the
+workflow token cannot push changes to workflow files. A pull request opened with that token
+does not start CI by itself: use "Update branch", or close and reopen it. To disable the steps
+again during a later outage, add the file back.
 
 ## Pages deployment
 
