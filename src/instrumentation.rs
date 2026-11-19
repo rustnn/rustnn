@@ -92,7 +92,7 @@ pub(crate) mod test_support {
     use std::collections::HashMap;
     use std::fmt;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Once};
 
     use tracing::field::{Field, Visit};
     use tracing::span::{Attributes, Id, Record};
@@ -186,6 +186,23 @@ pub(crate) mod test_support {
         fn exit(&self, _span: &Id) {
             self.entered.lock().unwrap().pop();
         }
+    }
+
+    /// Install the global subscriber for tests: `RUST_LOG` selects what is printed, and nothing
+    /// is printed unless it is set. Repeated calls are safe.
+    pub(crate) fn init_subscriber() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(tracing_subscriber::filter::LevelFilter::OFF.into())
+                        .with_env_var("RUST_LOG")
+                        .from_env_lossy(),
+                )
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+                .try_init();
+        });
     }
 
     /// Run `f` under a recording subscriber and return the events it emitted.

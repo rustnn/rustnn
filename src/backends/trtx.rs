@@ -1041,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_context_creation() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
         let devices = TrtxContext::list_devices();
         let context = if let [first, ..] = devices.as_slice() {
@@ -1055,7 +1055,7 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
             TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_create_tensors() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
             TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     #[should_panic = "assertion failed: dst.len() >= src.len()"]
     fn test_write_too_large_tensor() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
             TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
