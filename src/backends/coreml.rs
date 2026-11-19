@@ -102,6 +102,11 @@ impl fmt::Debug for CoremlGraph {
     }
 }
 
+/// Weight bytes from which a build converts its graph in place
+/// ([`CoremlMlProgramConverter::convert_owned`]). Smaller graphs keep the borrowing
+/// conversion, where the extra copies do not matter.
+const IN_PLACE_CONVERSION_MIN_WEIGHT_BYTES: usize = 32 << 20;
+
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
     options: CoremlOptions,
@@ -127,9 +132,48 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             .iter()
             .map(|pair| (pair.input_name(&graph_info), pair.output_name(&graph_info)))
             .collect();
-        let converted = CoremlMlProgramConverter
-            .convert_with_carried_state(&graph_info, float16_precision, &pairs)
-            .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        // The checks below read the graph as the caller built it, so take what they need
+        // before a conversion that rewrites it.
+        let has_inputs = !graph_info.input_operands.is_empty();
+        let has_float16 = has_float16_operand(&graph_info);
+        let in_memory_asset = supports_in_memory_asset(&graph_info);
+        let graph_hash = self
+            .options
+            .compiled_bundle_cache
+            .is_some()
+            .then(|| graph_info.hash_identifier("coreml", WeightsToHash::All));
+        // A graph with large weights is converted in place: the borrowing conversion holds
+        // the weights three times (the graph, its rewritten clone and the weight file),
+        // which a watch or a phone cannot afford for a language model. This build owns the
+        // graph and reads only its descriptors afterwards. Input-free graphs keep the
+        // borrowing conversion, whose constant-copy checks read the original constants.
+        let weight_bytes: usize = graph_info
+            .constant_operand_ids_to_handles
+            .values()
+            .map(|constant| constant.data.len())
+            .sum();
+        let in_place = has_inputs && weight_bytes >= IN_PLACE_CONVERSION_MIN_WEIGHT_BYTES;
+        let mut graph_info = graph_info;
+        let (model_data, weights_data) = if in_place {
+            let (data, weights) = CoremlMlProgramConverter
+                .convert_owned(&mut graph_info, float16_precision, &pairs)
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            // Free the constants before the weight file comes back into memory.
+            graph_info.constant_operand_ids_to_handles = Default::default();
+            let weights = weights
+                .map(crate::converters::WeightBlob::into_bytes)
+                .transpose()
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            (data, weights)
+        } else {
+            let converted = CoremlMlProgramConverter
+                .convert_with_carried_state(&graph_info, float16_precision, &pairs)
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            (converted.data, converted.weights_data)
+        };
+        // False for every graph with inputs, which is all the in-place conversion takes.
+        let constant_copy_eligible = !in_place
+            && CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &model_data);
         // Native float16 keeps the in-memory default with its reproduced URL cases.
         // Exact float16 was qualified through URL compilation: in memory, its widened
         // float16 subtraction loses NaN classes under a CPU and Neural Engine request,
@@ -140,16 +184,12 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // itself, so it follows the Native rule: through the URL compiler, iOS and tvOS 26
         // and 27 return 0 for WPT's data-free uint8 clamp that saturates to 255.
         let use_asset = match float16_precision {
-            CoremlFloat16Precision::Exact
-                if !graph_info.input_operands.is_empty() || has_float16_operand(&graph_info) =>
-            {
-                CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
-            }
-            _ => supports_in_memory_asset(&graph_info),
+            CoremlFloat16Precision::Exact if has_inputs || has_float16 => constant_copy_eligible,
+            _ => in_memory_asset,
         };
         // The exporter loads from a URL too, so it needs the same proof under either lowering.
-        let constant_copy_program = compile_route != CoremlCompileRoute::Native
-            && CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data);
+        let constant_copy_program =
+            compile_route != CoremlCompileRoute::Native && constant_copy_eligible;
         // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
         // cache enabled a program that would load in memory compiles from a URL instead.
         // Two classes keep the route chosen above, and with it their values: input-free
@@ -159,9 +199,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // cached only when its own route is already a URL route, which the Rust export
         // route is for everything except the constant-copy programs.
         let cache_moves_route = self.options.compiled_bundle_cache.is_some()
-            && !graph_info.input_operands.is_empty()
-            && !(float16_precision == CoremlFloat16Precision::Native
-                && has_float16_operand(&graph_info));
+            && has_inputs
+            && !(float16_precision == CoremlFloat16Precision::Native && has_float16);
         let use_asset = use_asset && !cache_moves_route;
         // Core ML's in-memory asset cannot plan a stateful program ("Failed to build the
         // model execution plan using in-memory model with error code: -14", macOS 27.3,
@@ -171,15 +210,16 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             .options
             .compiled_bundle_cache
             .as_deref()
-            .map(|directory| BundleCacheRequest {
+            .zip(graph_hash)
+            .map(|(directory, graph_hash)| BundleCacheRequest {
                 directory,
-                graph_hash: graph_info.hash_identifier("coreml", WeightsToHash::All),
+                graph_hash,
                 float16_precision,
                 carried_state: &carried,
             });
         let mut model = compile_model_cached(
-            converted.data,
-            converted.weights_data,
+            model_data,
+            weights_data,
             self.device_type,
             use_asset,
             constant_copy_program,

@@ -22,8 +22,30 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
+#import <objc/runtime.h>
 
 extern "C" {
+
+// The `objc` crate sends messages through `objc_msgSend` only on macOS and iOS. On every
+// other target, tvOS, watchOS and visionOS included, it looks the implementation up with
+// the two GNUstep entry points below and calls it directly. Apple's runtime has no such
+// symbols, so provide them: `class_getMethodImplementation` returns the method, or the
+// runtime's forwarding entry for a selector the class does not implement, which keeps
+// `doesNotRecognizeSelector:` behavior. The crate checks for a nil receiver itself.
+#if !TARGET_OS_OSX && !TARGET_OS_IOS
+IMP objc_msg_lookup(__unsafe_unretained id receiver, SEL op) {
+    return class_getMethodImplementation(object_getClass(receiver), op);
+}
+
+struct rustnn_objc_super {
+    __unsafe_unretained id receiver;
+    __unsafe_unretained Class super_class;
+};
+
+IMP objc_msg_lookup_super(const struct rustnn_objc_super *super, SEL op) {
+    return class_getMethodImplementation(super->super_class, op);
+}
+#endif
 
 static void rustnn_copy_err(char *buf, size_t len, NSString *msg) {
     if (buf == NULL || len == 0) {

@@ -82,6 +82,7 @@ nav:
   - User Guide:
       - Getting Started: user-guide/getting-started.md
       - Examples: user-guide/examples.md
+      - SmolLM2 on Apple Devices: user-guide/smollm2-on-apple-devices.md
       - Troubleshooting: user-guide/troubleshooting.md
       - Rust API Reference (from source, deployed from main): https://rustnn.github.io/rustnn/api/rustnn/
       - C and C++ API Reference (Doxygen): c-api/index.html

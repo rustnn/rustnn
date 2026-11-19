@@ -2823,13 +2823,13 @@ mod checked_attempt_tests {
         for unused in [0, 1024, 5 * 1024 * 1024] {
             let mut builder = crate::converters::WeightFileBuilder::new();
             if unused != 0 {
-                builder.original_weight(0, &vec![0; unused]);
+                builder.original_weight(0, &vec![0; unused]).unwrap();
             }
             let payload = [1u32, 0x8000_0000, 0x7fc1_2345]
                 .into_iter()
                 .flat_map(u32::to_le_bytes)
                 .collect::<Vec<_>>();
-            let offset = builder.original_weight(1, &payload);
+            let offset = builder.original_weight(1, &payload).unwrap();
             let weights = Arc::new(builder.finalize());
             let weak = Arc::downgrade(&weights);
             let source = CoremlWeightStorage::Shared(Arc::clone(&weights));
@@ -3014,7 +3014,7 @@ mod checked_attempt_tests {
                 pending_permutation: vec![],
             };
             let mut weight_builder = crate::converters::WeightFileBuilder::new();
-            let offset = weight_builder.original_weight(0, &bytes);
+            let offset = weight_builder.original_weight(0, &bytes).unwrap();
             let owner = Arc::new(weight_builder.finalize());
             // Raw UINT8 storage also preserves logical float/int payloads; the
             // descriptor defines their interpretation, not the blob record kind.

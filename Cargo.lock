@@ -4302,6 +4302,7 @@ dependencies = [
  "hiai-rs",
  "image",
  "js-sys",
+ "libc",
  "libloading 0.9.0",
  "libtest-mimic",
  "litert",
