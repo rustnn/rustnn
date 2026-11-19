@@ -4,6 +4,7 @@
 # - .github/workflows/ci.yml (dtolnay/rust-toolchain@1.X.Y)
 # - .github/workflows/wpt-conformance.yml
 # - .github/workflows/wpt-conformance-nightly.yml
+# - .github/workflows/onnxruntime-availability.yml
 # - .github/workflows/rustnnpt-gate.yml
 # - .github/workflows/snapshot-sync.yml
 # - .github/workflows/docs.yml
