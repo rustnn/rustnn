@@ -72,7 +72,6 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::Reciprocal { .. } => Some("Reciprocal"),
         Operation::RoundEven { .. } => Some("Round"),
         Operation::Cast { .. } => Some("Cast"),
-        Operation::Clamp { .. } => Some("Clamp"),
 
         // ── Activations ──────────────────────────────────────────────
         Operation::Relu { .. } => Some("ReLU"),
@@ -133,7 +132,6 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         // The DDK's ScatterNdUpdate aborts the process on-device; reject it so
         // the build fails cleanly instead of crashing.
         Operation::ScatterND { .. } => None,
-        Operation::Where { .. } => Some("Where"),
 
         // ── Normalization + Quantization ─────────────────────────────
         Operation::BatchNormalization { .. } => Some("BatchNormalization"),
@@ -149,15 +147,17 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::IsNaN { .. } => None,
         Operation::IsInfinite { .. } => None,
         Operation::Reverse { .. } => None,
+        Operation::InstanceNormalization { .. } => None,
+        Operation::LayerNormalization { .. } => None,
+        Operation::Triangular { .. } => None,
+        Operation::Shape { .. } => None,
+        Operation::QuantizeLinear { .. } => None,
+        Operation::Clamp { .. } => None,
+        Operation::Where { .. } => None,
 
         // ── Not supported ─────────────────────────────────────────────
-        Operation::Shape { .. }
-        | Operation::GatherElements { .. }
+        Operation::GatherElements { .. }
         | Operation::ScatterElements { .. }
-        | Operation::InstanceNormalization { .. }
-        | Operation::QuantizeLinear { .. }
-        | Operation::LayerNormalization { .. }
-        | Operation::Triangular { .. }
         | Operation::Gru { .. }
         | Operation::GruCell { .. }
         | Operation::Lstm { .. }
@@ -571,6 +571,13 @@ mod adapter {
             .collect()
     }
 
+    // Right-align `dims` in `rank` dimensions, padding with ones.
+    fn aligned_dims(dims: &[i64], rank: usize) -> Vec<i64> {
+        let mut aligned = vec![1i64; rank.saturating_sub(dims.len())];
+        aligned.extend_from_slice(dims);
+        aligned
+    }
+
     // Extract an f32 from a WebNN `MLNumber` (serde_json::Value number).
     fn json_number_f32(value: &serde_json::Value) -> Option<f32> {
         value
@@ -774,6 +781,730 @@ mod adapter {
         extra_ops.push(shape_const);
         connect_input(reshape, "shape", shape_const)?;
         Ok(reshape)
+    }
+
+    // Cast pairs the DDK's CastT actually accepts (measured on device). Pairs
+    // outside this set are routed through intermediates; because f32 reaches
+    // the integer types through f16, float-to-integer casts round above the f16
+    // mantissa (the kernel also rounds to nearest rather than truncating).
+    fn cast_targets(dt: DataType) -> &'static [DataType] {
+        match dt {
+            DataType::Float16 => &[
+                DataType::Float32,
+                DataType::Int32,
+                DataType::Int8,
+                DataType::Uint8,
+            ],
+            DataType::Float32 => &[DataType::Float16],
+            DataType::Int8 | DataType::Uint8 | DataType::Int32 => {
+                &[DataType::Float32, DataType::Float16]
+            }
+            DataType::Int64 => &[DataType::Float32, DataType::Int32],
+            _ => &[],
+        }
+    }
+
+    // The shortest chain of supported Cast ops from `src` to `dst`.
+    fn cast_path(src: DataType, dst: DataType) -> Vec<DataType> {
+        if src == dst {
+            return vec![src];
+        }
+        // BFS over the supported pairs.
+        let mut prev: std::collections::HashMap<DataType, DataType> =
+            std::collections::HashMap::new();
+        let mut queue = std::collections::VecDeque::from([src]);
+        let mut found = false;
+        while let Some(cur) = queue.pop_front() {
+            if cur == dst {
+                found = true;
+                break;
+            }
+            for &next in cast_targets(cur) {
+                if next != src && !prev.contains_key(&next) {
+                    prev.insert(next, cur);
+                    queue.push_back(next);
+                }
+            }
+        }
+        if found {
+            let mut rev = vec![dst];
+            let mut cur = dst;
+            while cur != src {
+                cur = prev[&cur];
+                rev.push(cur);
+            }
+            rev.reverse();
+            rev
+        } else {
+            // No known path: emit the direct cast and let the DDK report it.
+            vec![src, dst]
+        }
+    }
+
+    fn set_cast_dtypes(cast: ddk_CannOperatorHandle, src: DataType, dst: DataType) {
+        set_int64_attr(cast, "src_dtype", cann_data_type(src) as i64);
+        set_int64_attr(cast, "dst_dtype", cann_data_type(dst) as i64);
+    }
+
+    // Emit the chain from an already produced handle (a decomposed result).
+    fn emit_cast_chain(
+        input: ddk_CannOperatorHandle,
+        src: DataType,
+        dst: DataType,
+        name: &str,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let path = cast_path(src, dst);
+        let mut handle = input;
+        for (hop, pair) in path.windows(2).enumerate() {
+            let cast = create_op("Cast", &format!("{name}_hop{hop}"), extra_ops)?;
+            connect_input(cast, "x", handle)?;
+            set_cast_dtypes(cast, pair[0], pair[1]);
+            handle = cast;
+        }
+        Ok(handle)
+    }
+
+    // Emit the chain from a graph operand; the first hop connects through
+    // `connect_src_input`, so a Split output slot is routed by index.
+    fn emit_operand_cast_chain(
+        id: u32,
+        src: DataType,
+        dst: DataType,
+        name: &str,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let path = cast_path(src, dst);
+        let mut handle = handles[id as usize];
+        for (hop, pair) in path.windows(2).enumerate() {
+            let cast = create_op("Cast", &format!("{name}_hop{hop}"), extra_ops)?;
+            if hop == 0 {
+                connect_src_input(cast, "x", id, handles, split_out)?;
+            } else {
+                connect_input(cast, "x", handle)?;
+            }
+            set_cast_dtypes(cast, pair[0], pair[1]);
+            handle = cast;
+        }
+        Ok(handle)
+    }
+
+    // Scalar float constants in the operand's own dtype: the NPU runs the model in
+    // f16, and an f32 constant beside f16 tensors builds but fails at run time.
+    fn value_const_bytes(dtype: DataType, values: &[f32]) -> Vec<u8> {
+        match dtype {
+            DataType::Float16 => values
+                .iter()
+                .flat_map(|&v| half::f16::from_f32(v).to_le_bytes())
+                .collect(),
+            _ => values.iter().flat_map(|&v| v.to_le_bytes()).collect(),
+        }
+    }
+
+    // Shared normalization core: returns `(x - mean, sqrt(var + eps))`, both with
+    // keep_dims, reduced over `axes`.
+    fn emit_normalize_core(
+        x: ddk_CannOperatorHandle,
+        in_dims: &[i64],
+        axes: &[u32],
+        eps: f32,
+        dtype: DataType,
+        name: &str,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<(ddk_CannOperatorHandle, ddk_CannOperatorHandle), GraphError> {
+        let axes_i32: Vec<i32> = axes.iter().map(|&a| a as i32).collect();
+        let axes_const = make_const(
+            &format!("{name}_axes"),
+            bytemuck::cast_slice(&axes_i32),
+            &[axes_i32.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(axes_const);
+
+        let mean = create_op("ReduceMean", &format!("{name}_mean"), extra_ops)?;
+        connect_input(mean, "x", x)?;
+        connect_input(mean, "axes", axes_const)?;
+        set_bool_attr(mean, "keep_dims", true);
+
+        let centered = create_op("Sub", &format!("{name}_centered"), extra_ops)?;
+        connect_input(centered, "x1", x)?;
+        connect_input(centered, "x2", mean)?;
+
+        let sq = create_op("Mul", &format!("{name}_sq"), extra_ops)?;
+        connect_input(sq, "x1", centered)?;
+        connect_input(sq, "x2", centered)?;
+
+        let var = create_op("ReduceMean", &format!("{name}_var"), extra_ops)?;
+        connect_input(var, "x", sq)?;
+        connect_input(var, "axes", axes_const)?;
+        set_bool_attr(var, "keep_dims", true);
+
+        // eps is emitted at the variance shape: Expand of a constant fails at
+        // inference, and no elementwise pair relies on broadcasting.
+        let mut var_dims = in_dims.to_vec();
+        for &a in axes {
+            let Some(slot) = var_dims.get_mut(a as usize) else {
+                return Err(GraphError::ConversionFailed {
+                    format: "cann".into(),
+                    reason: format!("normalization axis {a} is outside rank {}", in_dims.len()),
+                });
+            };
+            *slot = 1;
+        }
+        let var_count: usize = var_dims.iter().map(|&d| d.max(1) as usize).product();
+        let eps_const = make_const(
+            &format!("{name}_eps"),
+            &value_const_bytes(dtype, &vec![eps; var_count]),
+            &var_dims,
+            cann_data_type(dtype),
+            0,
+        );
+        extra_ops.push(eps_const);
+
+        let var_eps = create_op("Add", &format!("{name}_var_eps"), extra_ops)?;
+        connect_input(var_eps, "x1", var)?;
+        connect_input(var_eps, "x2", eps_const)?;
+
+        let denom = create_op("Sqrt", &format!("{name}_denom"), extra_ops)?;
+        connect_input(denom, "x", var_eps)?;
+        Ok((centered, denom))
+    }
+
+    // Bytes per element for the dtypes a constant can hold; `None` for packed
+    // 4-bit values, which cannot be re-emitted elementwise.
+    fn bytes_per_element(dtype: DataType) -> Option<usize> {
+        match dtype {
+            DataType::Float32 | DataType::Int32 | DataType::Uint32 => Some(4),
+            DataType::Float16 => Some(2),
+            DataType::Int8 | DataType::Uint8 => Some(1),
+            DataType::Int64 | DataType::Uint64 => Some(8),
+            _ => None,
+        }
+    }
+
+    // Source element offset for every target position of a broadcast from
+    // `reshape_dims` (source values placed in a `target_dims`-rank shape) to
+    // `target_dims`.
+    fn const_broadcast_offsets(target_dims: &[i64], reshape_dims: &[i64]) -> Option<Vec<usize>> {
+        let rank = target_dims.len();
+        if reshape_dims.len() != rank {
+            return None;
+        }
+        let target_count: usize = target_dims.iter().map(|&d| d.max(1) as usize).product();
+        let mut offsets = Vec::with_capacity(target_count);
+        let mut index = vec![0usize; rank];
+        for _ in 0..target_count {
+            let mut offset = 0usize;
+            let mut stride = 1usize;
+            for axis in (0..rank).rev() {
+                let position = if target_dims[axis] == reshape_dims[axis] {
+                    index[axis]
+                } else {
+                    0
+                };
+                offset += position * stride;
+                stride *= reshape_dims[axis].max(1) as usize;
+            }
+            offsets.push(offset);
+            for axis in (0..rank).rev() {
+                index[axis] += 1;
+                if index[axis] < target_dims[axis].max(1) as usize {
+                    break;
+                }
+                index[axis] = 0;
+            }
+        }
+        Some(offsets)
+    }
+
+    // Re-emit constant `id` broadcast to `target_dims`, where `reshape_dims`
+    // positions the source values. Reshape and Expand of a constant fail at
+    // inference, so constants are materialized at the target shape instead.
+    fn emit_const_at_shape(
+        name: &str,
+        id: u32,
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        graph: &GraphInfo,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Option<ddk_CannOperatorHandle> {
+        let operand = &graph.operands[id as usize];
+        if operand.kind != crate::graph::OperandKind::Constant {
+            return None;
+        }
+        let dtype = operand.descriptor.data_type;
+        let bpe = bytes_per_element(dtype)?;
+        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
+        // The const loop emits 8-bit constants as f32 (the DDK Const kernel
+        // rejects int8/uint8), so re-emit them the same way here.
+        if matches!(dtype, DataType::Int8 | DataType::Uint8) {
+            let source = const_values_f32(data, dtype)?;
+            if offsets.iter().any(|&offset| offset >= source.len()) {
+                return None;
+            }
+            let elements: Vec<f32> = offsets.iter().map(|&offset| source[offset]).collect();
+            let constant = make_const(
+                name,
+                &value_const_bytes(DataType::Float32, &elements),
+                target_dims,
+                ddk_CannDataType::CANN_DT_FLOAT,
+                0,
+            );
+            extra_ops.push(constant);
+            return Some(constant);
+        }
+        if offsets
+            .iter()
+            .any(|&offset| offset * bpe + bpe > data.len())
+        {
+            // Malformed constant data: fall back to the generic path instead
+            // of emitting a buffer shorter than the declared shape.
+            return None;
+        }
+        let mut values = Vec::with_capacity(offsets.len() * bpe);
+        for offset in offsets {
+            values.extend_from_slice(&data[offset * bpe..(offset + 1) * bpe]);
+        }
+        let constant = make_const(name, &values, target_dims, cann_data_type(dtype), 0);
+        extra_ops.push(constant);
+        Some(constant)
+    }
+
+    // Decode a constant's elements as f32.
+    fn const_values_f32(data: &[u8], dtype: DataType) -> Option<Vec<f32>> {
+        Some(match dtype {
+            DataType::Float32 => data
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+            DataType::Float16 => data
+                .chunks_exact(2)
+                .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect(),
+            DataType::Int8 => data.iter().map(|&b| b as i8 as f32).collect(),
+            DataType::Uint8 => data.iter().map(|&b| b as f32).collect(),
+            DataType::Int32 => data
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
+                .collect(),
+            _ => return None,
+        })
+    }
+
+    // Re-emit constant `id` broadcast to `target_dims` as `dst`. Used where
+    // the expanded operand would otherwise be cast (constants cannot be) or
+    // combined with a tensor of another dtype.
+    fn emit_const_as(
+        name: &str,
+        id: u32,
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        dst: DataType,
+        graph: &GraphInfo,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Option<ddk_CannOperatorHandle> {
+        let operand = &graph.operands[id as usize];
+        if operand.kind != crate::graph::OperandKind::Constant {
+            return None;
+        }
+        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let source = const_values_f32(data, operand.descriptor.data_type)?;
+        let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
+        if offsets.iter().any(|&offset| offset >= source.len()) {
+            return None;
+        }
+        let values: Vec<f32> = offsets.into_iter().map(|offset| source[offset]).collect();
+        let constant = make_const(
+            name,
+            &value_const_bytes(dst, &values),
+            target_dims,
+            cann_data_type(dst),
+            0,
+        );
+        extra_ops.push(constant);
+        Some(constant)
+    }
+
+    // Re-emit constant `id` broadcast to `target_dims` as the DDK's BOOL type.
+    // A constant cannot be cast (CastT rejects constant inputs), so a constant
+    // condition is materialized as BOOL directly.
+    fn emit_const_as_bool(
+        name: &str,
+        id: u32,
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        graph: &GraphInfo,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Option<ddk_CannOperatorHandle> {
+        let operand = &graph.operands[id as usize];
+        if operand.kind != crate::graph::OperandKind::Constant {
+            return None;
+        }
+        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let source = const_values_f32(data, operand.descriptor.data_type)?;
+        let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
+        if offsets.iter().any(|&offset| offset >= source.len()) {
+            return None;
+        }
+        let bits: Vec<u8> = offsets
+            .into_iter()
+            .map(|offset| u8::from(source[offset] != 0.0))
+            .collect();
+        let constant = make_const(name, &bits, target_dims, ddk_CannDataType::CANN_DT_BOOL, 0);
+        extra_ops.push(constant);
+        Some(constant)
+    }
+
+    // Permute a constant parameter from the axes order the options list to the
+    // sorted order the placement reshape uses, then broadcast it to
+    // `target_dims`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_const_param_permuted(
+        name: &str,
+        id: u32,
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        perm: &[u32],
+        graph: &GraphInfo,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Option<ddk_CannOperatorHandle> {
+        let operand = &graph.operands[id as usize];
+        if operand.kind != crate::graph::OperandKind::Constant {
+            return None;
+        }
+        let dtype = operand.descriptor.data_type;
+        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let source = const_values_f32(data, dtype)?;
+        let dims = descriptor_dims(&operand.descriptor);
+        let rank = dims.len();
+        if rank != perm.len() || dims.iter().any(|&d| d <= 0) {
+            return None;
+        }
+        if source.len() < dims.iter().map(|&d| d as usize).product() {
+            return None;
+        }
+        // Row-major source strides for each source axis.
+        let mut strides = vec![1usize; rank];
+        for axis in (0..rank.saturating_sub(1)).rev() {
+            strides[axis] = strides[axis + 1] * dims[axis + 1] as usize;
+        }
+        let permuted_dims: Vec<i64> = perm.iter().map(|&p| dims[p as usize]).collect();
+        let count: usize = permuted_dims.iter().map(|&d| d as usize).product();
+        let mut permuted = Vec::with_capacity(count);
+        let mut index = vec![0usize; rank];
+        for _ in 0..count {
+            let offset: usize = (0..rank)
+                .map(|axis| index[axis] * strides[perm[axis] as usize])
+                .sum();
+            permuted.push(source[offset]);
+            for axis in (0..rank).rev() {
+                index[axis] += 1;
+                if index[axis] < permuted_dims[axis] as usize {
+                    break;
+                }
+                index[axis] = 0;
+            }
+        }
+        let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
+        if offsets.iter().any(|&offset| offset >= permuted.len()) {
+            return None;
+        }
+        let values: Vec<f32> = offsets.into_iter().map(|offset| permuted[offset]).collect();
+        let constant = make_const(
+            name,
+            &value_const_bytes(dtype, &values),
+            target_dims,
+            cann_data_type(dtype),
+            0,
+        );
+        extra_ops.push(constant);
+        Some(constant)
+    }
+
+    // Transpose a parameter that is not constant into the sorted axes order,
+    // then reshape and expand it to `target_dims`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_transposed_expanded_param(
+        name: &str,
+        id: u32,
+        perm: &[i32],
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        handles: &[ddk_CannOperatorHandle],
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let transposed = emit_transpose(name, handles[id as usize], perm, extra_ops)?;
+        let reshaped = create_op("Reshape", &format!("{name}_reshape"), extra_ops)?;
+        connect_input(reshaped, "x", transposed)?;
+        let reshape_i32: Vec<i32> = reshape_dims.iter().map(|&d| d as i32).collect();
+        let reshape_const = make_const(
+            &format!("{name}_reshape_shape"),
+            bytemuck::cast_slice(&reshape_i32),
+            &[reshape_i32.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(reshape_const);
+        connect_input(reshaped, "shape", reshape_const)?;
+        let target_i32: Vec<i32> = target_dims.iter().map(|&d| d as i32).collect();
+        let target_const = make_const(
+            &format!("{name}_expand_shape"),
+            bytemuck::cast_slice(&target_i32),
+            &[target_i32.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(target_const);
+        let expanded = create_op("Expand", &format!("{name}_expanded"), extra_ops)?;
+        connect_input(expanded, "x", reshaped)?;
+        connect_input(expanded, "shape", target_const)?;
+        Ok(expanded)
+    }
+
+    // Reshape `id` to `reshape_dims` (a full-rank shape with 1s outside the
+    // normalized axes) and expand it to `target_dims`, so it can be combined
+    // with the normalized value without broadcasting.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_expanded_param(
+        name: &str,
+        id: u32,
+        target_dims: &[i64],
+        reshape_dims: &[i64],
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        if let Some(constant) =
+            emit_const_at_shape(name, id, target_dims, reshape_dims, graph, extra_ops)
+        {
+            return Ok(constant);
+        }
+        let reshaped = create_op("Reshape", &format!("{name}_reshape"), extra_ops)?;
+        connect_src_input(reshaped, "x", id, handles, split_out)?;
+        let reshape_i32: Vec<i32> = reshape_dims.iter().map(|&d| d as i32).collect();
+        let reshape_const = make_const(
+            &format!("{name}_reshape_shape"),
+            bytemuck::cast_slice(&reshape_i32),
+            &[reshape_i32.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(reshape_const);
+        connect_input(reshaped, "shape", reshape_const)?;
+
+        let target_i32: Vec<i32> = target_dims.iter().map(|&d| d as i32).collect();
+        let target_const = make_const(
+            &format!("{name}_expand_shape"),
+            bytemuck::cast_slice(&target_i32),
+            &[target_i32.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(target_const);
+        let expanded = create_op("Expand", &format!("{name}_expanded"), extra_ops)?;
+        connect_input(expanded, "x", reshaped)?;
+        connect_input(expanded, "shape", target_const)?;
+        Ok(expanded)
+    }
+
+    // instanceNormalization: normalize over the spatial axes, then scale/bias
+    // (1-D, one value per channel).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_instance_norm(
+        opts: &crate::operator_options::MLInstanceNormalizationOptions,
+        x: ddk_CannOperatorHandle,
+        in_dims: &[i64],
+        dtype: DataType,
+        name: &str,
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let (centered, denom) = emit_normalize_core(
+            x,
+            in_dims,
+            &[2, 3],
+            opts.epsilon as f32,
+            dtype,
+            name,
+            extra_ops,
+        )?;
+        let norm = create_op("Div", &format!("{name}_norm"), extra_ops)?;
+        connect_input(norm, "x1", centered)?;
+        connect_input(norm, "x2", denom)?;
+        let mut y = norm;
+
+        // [C] -> [1, C, 1, 1] -> the full input shape.
+        let mut reshape = vec![1i64; in_dims.len()];
+        reshape[1] = in_dims[1];
+        if let Some(scale_id) = opts.scale {
+            let scale = emit_expanded_param(
+                &format!("{name}_scale"),
+                scale_id,
+                in_dims,
+                &reshape,
+                graph,
+                handles,
+                split_out,
+                extra_ops,
+            )?;
+            let mul = create_op("Mul", &format!("{name}_scale_mul"), extra_ops)?;
+            connect_input(mul, "x1", y)?;
+            connect_input(mul, "x2", scale)?;
+            y = mul;
+        }
+        if let Some(bias_id) = opts.bias {
+            let bias = emit_expanded_param(
+                &format!("{name}_bias"),
+                bias_id,
+                in_dims,
+                &reshape,
+                graph,
+                handles,
+                split_out,
+                extra_ops,
+            )?;
+            let add = create_op("Add", &format!("{name}_bias_add"), extra_ops)?;
+            connect_input(add, "x1", y)?;
+            connect_input(add, "x2", bias)?;
+            y = add;
+        }
+        Ok(y)
+    }
+
+    // layerNormalization: normalize over `axes`, then scale/bias shaped like the
+    // reduced axes.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_layer_norm(
+        opts: &crate::operator_options::MLLayerNormalizationOptions,
+        x: ddk_CannOperatorHandle,
+        in_dims: &[i64],
+        dtype: DataType,
+        name: &str,
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let rank = in_dims.len();
+        let mut axes: Vec<u32> = opts
+            .axes
+            .clone()
+            .unwrap_or_else(|| (1..rank as u32).collect());
+        // WebNN orders scale/bias elements by the axes as listed; the placement
+        // below uses sorted axes, so their parameters are permuted to match.
+        let axes_given = axes.clone();
+        axes.sort_unstable();
+        let perm: Vec<u32> = if axes == axes_given {
+            Vec::new()
+        } else {
+            axes.iter()
+                .map(|axis| {
+                    axes_given
+                        .iter()
+                        .position(|given| given == axis)
+                        .expect("sorted axes are a permutation of the given axes")
+                        as u32
+                })
+                .collect()
+        };
+        let mut y = if axes.is_empty() {
+            // Reducing over no axes leaves the variance at zero, so the
+            // normalized value is zero everywhere; scale and bias still apply.
+            let dims = if in_dims.is_empty() {
+                vec![1]
+            } else {
+                in_dims.to_vec()
+            };
+            let count: usize = dims.iter().map(|&d| d.max(1) as usize).product();
+            let zeros = make_const(
+                &format!("{name}_zeros"),
+                &value_const_bytes(dtype, &vec![0.0; count]),
+                &dims,
+                cann_data_type(dtype),
+                0,
+            );
+            extra_ops.push(zeros);
+            zeros
+        } else {
+            let (centered, denom) = emit_normalize_core(
+                x,
+                in_dims,
+                &axes,
+                opts.epsilon as f32,
+                dtype,
+                name,
+                extra_ops,
+            )?;
+            let norm = create_op("Div", &format!("{name}_norm"), extra_ops)?;
+            connect_input(norm, "x1", centered)?;
+            connect_input(norm, "x2", denom)?;
+            norm
+        };
+
+        // Scale/bias are shaped like the reduced axes; place them at those axes
+        // in a full-rank shape before expanding to the input shape. With no
+        // axes they broadcast from their own shape instead.
+        let reshape = |id: u32| -> Vec<i64> {
+            if axes.is_empty() {
+                let dims = descriptor_dims(&graph.operands[id as usize].descriptor);
+                aligned_dims(&dims, in_dims.len())
+            } else {
+                let mut reshape = vec![1i64; in_dims.len()];
+                for &a in &axes {
+                    reshape[a as usize] = in_dims[a as usize];
+                }
+                reshape
+            }
+        };
+        for (id, suffix) in [(opts.scale, "scale"), (opts.bias, "bias")] {
+            let Some(param_id) = id else { continue };
+            let param = if perm.is_empty() {
+                emit_expanded_param(
+                    &format!("{name}_{suffix}"),
+                    param_id,
+                    in_dims,
+                    &reshape(param_id),
+                    graph,
+                    handles,
+                    split_out,
+                    extra_ops,
+                )?
+            } else if let Some(constant) = emit_const_param_permuted(
+                &format!("{name}_{suffix}"),
+                param_id,
+                in_dims,
+                &reshape(param_id),
+                &perm,
+                graph,
+                extra_ops,
+            ) {
+                constant
+            } else {
+                let perm_i32: Vec<i32> = perm.iter().map(|&p| p as i32).collect();
+                emit_transposed_expanded_param(
+                    &format!("{name}_{suffix}"),
+                    param_id,
+                    &perm_i32,
+                    in_dims,
+                    &reshape(param_id),
+                    handles,
+                    extra_ops,
+                )?
+            };
+            let op_type = if suffix == "scale" { "Mul" } else { "Add" };
+            let combine = create_op(op_type, &format!("{name}_{suffix}_op"), extra_ops)?;
+            connect_input(combine, "x1", y)?;
+            connect_input(combine, "x2", param)?;
+            y = combine;
+        }
+        Ok(y)
     }
 
     // Plain dequantize int8/uint8 -> float32 (symmetric, no zero-point; the
@@ -996,6 +1727,162 @@ mod adapter {
         }
     }
 
+    // Cast a BOOL-producing result to the dtype the graph declares for `out_id`:
+    // the DDK returns BOOL where WebNN declares uint8.
+    fn emit_bool_output_cast(
+        result: ddk_CannOperatorHandle,
+        out_id: u32,
+        graph: &GraphInfo,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let dst = graph.operands[out_id as usize].descriptor.data_type;
+        let cast = create_op("Cast", &format!("bool_cast_{out_id}"), extra_ops)?;
+        connect_input(cast, "x", result)?;
+        set_int64_attr(cast, "src_dtype", ddk_CannDataType::CANN_DT_BOOL as i64);
+        set_int64_attr(cast, "dst_dtype", cann_data_type(dst) as i64);
+        Ok(cast)
+    }
+
+    fn is_logical_op(op: &Operation) -> bool {
+        matches!(
+            op,
+            Operation::LogicalAnd { .. }
+                | Operation::LogicalOr { .. }
+                | Operation::LogicalXor { .. }
+                | Operation::LogicalNot { .. }
+        )
+    }
+
+    // WebNN logical operands are uint8; the DDK's Logical* ops take BOOL.
+    // Returns a BOOL cast of `id` when it is uint8.
+    fn emit_bool_operand_cast(
+        name: &str,
+        id: u32,
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<Option<ddk_CannOperatorHandle>, GraphError> {
+        if graph.operands[id as usize].descriptor.data_type != DataType::Uint8 {
+            return Ok(None);
+        }
+        // A constant cannot be cast, so materialize it as BOOL directly.
+        if graph.constant_operand_ids_to_handles.contains_key(&id) {
+            let mut dims = descriptor_dims(&graph.operands[id as usize].descriptor);
+            if dims.is_empty() {
+                dims = vec![1];
+            }
+            if let Some(bits) = emit_const_as_bool(name, id, &dims, &dims, graph, extra_ops) {
+                return Ok(Some(bits));
+            }
+        }
+        let cast = create_op("Cast", name, extra_ops)?;
+        connect_src_input(cast, "x", id, handles, split_out)?;
+        set_int64_attr(cast, "src_dtype", cann_data_type(DataType::Uint8) as i64);
+        set_int64_attr(cast, "dst_dtype", ddk_CannDataType::CANN_DT_BOOL as i64);
+        Ok(Some(cast))
+    }
+
+    // Connect a binary operand, casting uint8 logical operands to BOOL.
+    #[allow(clippy::too_many_arguments)]
+    fn connect_binary_operand(
+        compute_op: ddk_CannOperatorHandle,
+        name: &std::ffi::CString,
+        id: u32,
+        cast_bool: bool,
+        cast_name: &str,
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<(), GraphError> {
+        if cast_bool
+            && let Some(cast) =
+                emit_bool_operand_cast(cast_name, id, graph, handles, split_out, extra_ops)?
+        {
+            return connect_input(compute_op, name.to_str().unwrap(), cast);
+        }
+        let status = unsafe { set_src_input(compute_op, name, id, handles, split_out) };
+        if status != 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: "cann_operator_set_input for a binary operand failed".into(),
+            });
+        }
+        Ok(())
+    }
+
+    // Connect `id` to `op`'s `name` input as f32. `GemmD` accepts f32
+    // operands only. A constant cannot be cast (CastT rejects constant
+    // inputs), so an f16 constant is re-emitted as f32 instead.
+    #[allow(clippy::too_many_arguments)]
+    fn connect_operand_f32(
+        op: ddk_CannOperatorHandle,
+        name: &str,
+        id: u32,
+        tag: &str,
+        graph: &GraphInfo,
+        handles: &[ddk_CannOperatorHandle],
+        split_out: &std::collections::HashMap<u32, u32>,
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<(), GraphError> {
+        let operand = &graph.operands[id as usize];
+        let dtype = operand.descriptor.data_type;
+        if dtype == DataType::Float32 {
+            return connect_src_input(op, name, id, handles, split_out);
+        }
+        if dtype == DataType::Float16
+            && operand.kind == crate::graph::OperandKind::Constant
+            && let Some(data) = graph.constant_operand_ids_to_handles.get(&id)
+            && data.data.len() % 2 == 0
+        {
+            let values: Vec<u8> = data
+                .data
+                .chunks_exact(2)
+                .flat_map(|pair| {
+                    half::f16::from_le_bytes([pair[0], pair[1]])
+                        .to_f32()
+                        .to_le_bytes()
+                })
+                .collect();
+            let mut dims = descriptor_dims(&operand.descriptor);
+            if dims.is_empty() {
+                dims = vec![1];
+            }
+            let constant = make_const(
+                &format!("{name}_f32_const_{tag}"),
+                &values,
+                &dims,
+                ddk_CannDataType::CANN_DT_FLOAT,
+                0,
+            );
+            extra_ops.push(constant);
+            return connect_input(op, name, constant);
+        }
+        let cast = create_op("Cast", &format!("{name}_f32_cast_{tag}"), extra_ops)?;
+        connect_src_input(cast, "x", id, handles, split_out)?;
+        set_int64_attr(cast, "src_dtype", cann_data_type(dtype) as i64);
+        set_int64_attr(cast, "dst_dtype", cann_data_type(DataType::Float32) as i64);
+        connect_input(op, name, cast)
+    }
+
+    // Ops whose DDK kernels produce a BOOL result.
+    fn is_bool_producing(op: &Operation) -> bool {
+        matches!(
+            op,
+            Operation::Equal { .. }
+                | Operation::Greater { .. }
+                | Operation::GreaterOrEqual { .. }
+                | Operation::Lesser { .. }
+                | Operation::LesserOrEqual { .. }
+                | Operation::NotEqual { .. }
+                | Operation::LogicalAnd { .. }
+                | Operation::LogicalOr { .. }
+                | Operation::LogicalXor { .. }
+                | Operation::LogicalNot { .. }
+        )
+    }
+
     // Returns the output operand slice for all operations with standard
     // `outputs: Vec<u32>` field.
     fn op_outputs(operation: &Operation) -> &[u32] {
@@ -1126,6 +2013,16 @@ mod adapter {
     pub(crate) fn encode_via_adapter(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
         use std::ffi::CString;
 
+        // An elementwise graph folds its leading two dimensions so the 4-D
+        // kernels can run it. The backend folds the dispatch shapes to match,
+        // so both layers decide on the graph as received.
+        let folded = if graph.can_fold_rank5() {
+            Some(graph.fold_rank5())
+        } else {
+            None
+        };
+        let graph = folded.as_ref().unwrap_or(graph);
+
         // The NPU's Reshape/Slice/Permute kernels cap at 4-D, so lower the ViT
         // 5-D attention qkv split before emission.
         let rewritten = super::rewrite_attention_5d(graph);
@@ -1178,7 +2075,12 @@ mod adapter {
 
         for &input_id in &graph.input_operands {
             let descriptor = &graph.operands[input_id as usize].descriptor;
-            let dimensions = descriptor_dims(descriptor);
+            let mut dimensions = descriptor_dims(descriptor);
+            if dimensions.is_empty() {
+                // GE rejects 0-D tensors (`shape_count <= 0`); a WebNN scalar is
+                // one element, so describe it as `[1]` (same as the const path).
+                dimensions = vec![1];
+            }
             let name = CString::new(
                 graph.operands[input_id as usize]
                     .name
@@ -1347,6 +2249,195 @@ mod adapter {
                     }
                     continue;
                 }
+            }
+
+            // Cast: route unsupported pairs through intermediates (f32 -> int8,
+            // for example, has to pass through f16).
+            if let Operation::Cast { input, outputs, .. } = op {
+                let src_dtype = graph.operands[*input as usize].descriptor.data_type;
+                let dst_dtype = graph.operands[outputs[0] as usize].descriptor.data_type;
+                let out_id = outputs[0];
+                let handle = emit_operand_cast_chain(
+                    *input,
+                    src_dtype,
+                    dst_dtype,
+                    &format!("cast_{out_id}"),
+                    &handles,
+                    &split_out,
+                    &mut guard.extra_ops,
+                )?;
+                handles[out_id as usize] = handle;
+                // A same-type cast returns the input handle; keep a Split
+                // output slot routed to the consumers of `out_id`.
+                if let Some(&slot) = split_out.get(input) {
+                    split_out.insert(out_id, slot);
+                }
+                continue;
+            }
+
+            // quantizeLinear = Cast(round(x / scale) + zero_point). The DDK cannot
+            // cast f32 straight to int8/uint8, so the arithmetic runs in f16 and the
+            // result is cast through f16 (supported) to the declared type.
+            if let Operation::QuantizeLinear {
+                input,
+                scale,
+                zero_point,
+                outputs,
+                ..
+            } = op
+            {
+                let out_id = outputs[0];
+                let src_dtype = graph.operands[*input as usize].descriptor.data_type;
+                let dst_dtype = graph.operands[outputs[0] as usize].descriptor.data_type;
+                // The DDK has no 0-D tensors; describe a scalar as `[1]`.
+                let in_dims = {
+                    let dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                    if dims.is_empty() { vec![1] } else { dims }
+                };
+                let rank = in_dims.len();
+                let ones = vec![1i64; rank];
+                let element_count = |id: u32| -> usize {
+                    graph.operands[id as usize]
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as usize,
+                            _ => 0,
+                        })
+                        .product::<usize>()
+                };
+
+                let x = emit_operand_cast_chain(
+                    *input,
+                    src_dtype,
+                    DataType::Float16,
+                    &format!("quant_x_{out_id}"),
+                    &handles,
+                    &split_out,
+                    &mut guard.extra_ops,
+                )?;
+
+                // A scalar scale/zero point is expanded to the input shape so the
+                // elementwise ops never rely on broadcasting.
+                let scale_dtype = graph.operands[*scale as usize].descriptor.data_type;
+                let scale_h = if let Some(constant) = emit_const_as(
+                    &format!("quant_scale_{out_id}"),
+                    *scale,
+                    &in_dims,
+                    &aligned_dims(
+                        &descriptor_dims(&graph.operands[*scale as usize].descriptor),
+                        rank,
+                    ),
+                    DataType::Float16,
+                    graph,
+                    &mut guard.extra_ops,
+                ) {
+                    constant
+                } else if rank > 0 && element_count(*scale) <= 1 {
+                    let expanded = emit_expanded_param(
+                        &format!("quant_scale_{out_id}"),
+                        *scale,
+                        &in_dims,
+                        &ones,
+                        graph,
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?;
+                    emit_cast_chain(
+                        expanded,
+                        scale_dtype,
+                        DataType::Float16,
+                        &format!("quant_scale_cast_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?
+                } else {
+                    emit_operand_cast_chain(
+                        *scale,
+                        scale_dtype,
+                        DataType::Float16,
+                        &format!("quant_scale_cast_{out_id}"),
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?
+                };
+
+                let div = create_op("Div", &format!("quant_div_{out_id}"), &mut guard.extra_ops)?;
+                connect_input(div, "x1", x)?;
+                connect_input(div, "x2", scale_h)?;
+                let round = create_op(
+                    "Round",
+                    &format!("quant_round_{out_id}"),
+                    &mut guard.extra_ops,
+                )?;
+                connect_input(round, "x", div)?;
+                let mut value = round;
+
+                if let Some(zp_id) = zero_point {
+                    let zp_dtype = graph.operands[*zp_id as usize].descriptor.data_type;
+                    let zp = if let Some(constant) = emit_const_as(
+                        &format!("quant_zp_{out_id}"),
+                        *zp_id,
+                        &in_dims,
+                        &aligned_dims(
+                            &descriptor_dims(&graph.operands[*zp_id as usize].descriptor),
+                            rank,
+                        ),
+                        DataType::Float16,
+                        graph,
+                        &mut guard.extra_ops,
+                    ) {
+                        constant
+                    } else if rank > 0 && element_count(*zp_id) <= 1 {
+                        let expanded = emit_expanded_param(
+                            &format!("quant_zp_{out_id}"),
+                            *zp_id,
+                            &in_dims,
+                            &ones,
+                            graph,
+                            &handles,
+                            &split_out,
+                            &mut guard.extra_ops,
+                        )?;
+                        emit_cast_chain(
+                            expanded,
+                            zp_dtype,
+                            DataType::Float16,
+                            &format!("quant_zp_cast_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?
+                    } else {
+                        emit_operand_cast_chain(
+                            *zp_id,
+                            zp_dtype,
+                            DataType::Float16,
+                            &format!("quant_zp_cast_{out_id}"),
+                            &handles,
+                            &split_out,
+                            &mut guard.extra_ops,
+                        )?
+                    };
+                    let add = create_op(
+                        "Add",
+                        &format!("quant_zp_add_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_input(add, "x1", value)?;
+                    connect_input(add, "x2", zp)?;
+                    value = add;
+                }
+
+                let result = emit_cast_chain(
+                    value,
+                    DataType::Float16,
+                    dst_dtype,
+                    &format!("quant_out_{out_id}"),
+                    &mut guard.extra_ops,
+                )?;
+                handles[out_id as usize] = result;
+                continue;
             }
 
             // Sigmoid is decomposed:
@@ -1666,8 +2757,8 @@ mod adapter {
             if let Operation::ArgMin {
                 input,
                 axis,
+                options,
                 outputs,
-                ..
             } = op
             {
                 let out_id = outputs[0];
@@ -1679,6 +2770,16 @@ mod adapter {
                     &format!("argmin_argmax_{out_id}"),
                     &mut guard.extra_ops,
                 )?;
+                set_int64_attr(
+                    argmax,
+                    "output_type",
+                    cann_data_type(graph.operands[out_id as usize].descriptor.data_type) as i64,
+                );
+                set_bool_attr(
+                    argmax,
+                    "keep_dims",
+                    options.as_ref().map(|o| o.keep_dimensions).unwrap_or(false),
+                );
                 connect_input(argmax, "x", neg)?;
                 let axis_const = make_const(
                     &format!("argmin_axis_{out_id}"),
@@ -1821,9 +2922,19 @@ mod adapter {
                 continue;
             }
 
-            // Identity = Reshape(x, Shape(x)).
+            // Identity = Reshape(x, Shape(x)). Reshape of a constant fails at
+            // inference, so a constant is used as-is (the shape is unchanged).
+            // An 8-bit constant is emitted as f32 by the const loop, so its
+            // handle dtype would not match an int8/uint8 output.
             if let Operation::Identity { input, outputs, .. } = op {
                 let out_id = outputs[0];
+                let in_dtype = graph.operands[*input as usize].descriptor.data_type;
+                if graph.constant_operand_ids_to_handles.contains_key(input)
+                    && !matches!(in_dtype, DataType::Int8 | DataType::Uint8)
+                {
+                    handles[out_id as usize] = handles[*input as usize];
+                    continue;
+                }
                 let shape_op = create_op(
                     "Shape",
                     &format!("identity_shape_{out_id}"),
@@ -1854,54 +2965,40 @@ mod adapter {
                 connect_src_input(ne, "x1", *input, &handles, &split_out)?;
                 connect_src_input(ne, "x2", *input, &handles, &split_out)?;
 
-                handles[out_id as usize] = ne;
+                handles[out_id as usize] =
+                    emit_bool_output_cast(ne, out_id, graph, &mut guard.extra_ops)?;
                 continue;
             }
 
-            // isInfinite = (x == +inf) || (x == -inf).
+            // isInfinite = (x == +inf) || (x == -inf). The comparison tensors
+            // are emitted at the input shape because Expand of a constant
+            // fails at inference.
             if let Operation::IsInfinite { input, outputs, .. } = op {
                 let out_id = outputs[0];
-                let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
-                let shape_const = make_const(
-                    &format!("isinfinite_shape_{out_id}"),
-                    bytemuck::cast_slice(&in_dims.iter().map(|&d| d as i32).collect::<Vec<_>>()),
-                    &[in_dims.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(shape_const);
-
+                let mut in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                if in_dims.is_empty() {
+                    in_dims = vec![1];
+                }
+                let count: usize = in_dims.iter().map(|&d| d.max(1) as usize).product();
+                let in_dtype = graph.operands[*input as usize].descriptor.data_type;
                 let pos = make_const(
                     &format!("isinfinite_pos_{out_id}"),
-                    bytemuck::cast_slice(&[f32::INFINITY]),
-                    &[1],
-                    ddk_CannDataType::CANN_DT_FLOAT,
+                    &value_const_bytes(in_dtype, &vec![f32::INFINITY; count]),
+                    &in_dims,
+                    cann_data_type(in_dtype),
                     0,
                 );
                 let neg = make_const(
                     &format!("isinfinite_neg_{out_id}"),
-                    bytemuck::cast_slice(&[f32::NEG_INFINITY]),
-                    &[1],
-                    ddk_CannDataType::CANN_DT_FLOAT,
+                    &value_const_bytes(in_dtype, &vec![f32::NEG_INFINITY; count]),
+                    &in_dims,
+                    cann_data_type(in_dtype),
                     0,
                 );
                 guard.extra_ops.push(pos);
                 guard.extra_ops.push(neg);
-
-                let pos_b = create_op(
-                    "Expand",
-                    &format!("isinfinite_pos_b_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_input(pos_b, "x", pos)?;
-                connect_input(pos_b, "shape", shape_const)?;
-                let neg_b = create_op(
-                    "Expand",
-                    &format!("isinfinite_neg_b_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_input(neg_b, "x", neg)?;
-                connect_input(neg_b, "shape", shape_const)?;
+                let pos_b = pos;
+                let neg_b = neg;
 
                 let eq_pos = create_op(
                     "Equal",
@@ -1926,11 +3023,96 @@ mod adapter {
                 connect_input(or_op, "x1", eq_pos)?;
                 connect_input(or_op, "x2", eq_neg)?;
 
-                handles[out_id as usize] = or_op;
+                handles[out_id as usize] =
+                    emit_bool_output_cast(or_op, out_id, graph, &mut guard.extra_ops)?;
                 continue;
             }
 
-            // linear(x) = alpha * x + beta.
+            // triangular = Where(mask, x, 0) with a constant BOOL mask over the
+            // last two dims (`upper`/`diagonal` from the options).
+            if let Operation::Triangular {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let out_id = outputs[0];
+                let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                if in_dims.len() < 2 || in_dims.iter().any(|&d| d <= 0) {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!("triangular needs static dims, got {in_dims:?}"),
+                    });
+                }
+                // `upper` defaults to the upper triangle; diagonal defaults to 0.
+                let upper = options.as_ref().and_then(|o| o.upper).unwrap_or(true);
+                let diagonal = options.as_ref().map(|o| o.diagonal).unwrap_or(0) as i64;
+                let rows = in_dims[in_dims.len() - 2] as usize;
+                let cols = in_dims[in_dims.len() - 1] as usize;
+                let elems: usize = in_dims.iter().map(|&d| d as usize).product();
+                let plane = rows * cols;
+                let mut mask = vec![0u8; elems];
+                for (i, m) in mask.iter_mut().enumerate() {
+                    let pos = i % plane;
+                    let r = (pos / cols) as i64;
+                    let c = (pos % cols) as i64;
+                    let d = c - r;
+                    if (upper && d >= diagonal) || (!upper && d <= diagonal) {
+                        *m = 1;
+                    }
+                }
+                let descriptor = &graph.operands[*input as usize].descriptor;
+                let elem_size = bytes_per_element(descriptor.data_type).unwrap_or(4);
+                let zeros = vec![0u8; elems * elem_size];
+                let mask_const = make_const(
+                    &format!("tri_mask_{out_id}"),
+                    &mask,
+                    &in_dims,
+                    ddk_CannDataType::CANN_DT_BOOL,
+                    2,
+                );
+                let zero_const = make_const(
+                    &format!("tri_zero_{out_id}"),
+                    &zeros,
+                    &in_dims,
+                    cann_data_type(descriptor.data_type),
+                    2,
+                );
+                guard.extra_ops.push(mask_const);
+                guard.extra_ops.push(zero_const);
+                let where_op = create_op(
+                    "Where",
+                    &format!("tri_where_{out_id}"),
+                    &mut guard.extra_ops,
+                )?;
+                connect_input(where_op, "condition", mask_const)?;
+                connect_src_input(where_op, "x1", *input, &handles, &split_out)?;
+                connect_input(where_op, "x2", zero_const)?;
+                handles[out_id as usize] = where_op;
+                continue;
+            }
+
+            // shape = constant int64 vector of the input's static dims.
+            if let Operation::Shape { input, outputs, .. } = op {
+                let out_id = outputs[0];
+                let dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                let vals: Vec<i64> = dims.to_vec();
+                let shape_const = make_const(
+                    &format!("shape_{out_id}"),
+                    bytemuck::cast_slice(&vals),
+                    &[vals.len() as i64],
+                    ddk_CannDataType::CANN_DT_INT64,
+                    2,
+                );
+                guard.extra_ops.push(shape_const);
+                handles[out_id as usize] = shape_const;
+                continue;
+            }
+
+            // linear = alpha * x + beta. The scale and offset are one-element
+            // constants the elementwise kernels broadcast; Expand of a constant
+            // fails at inference, and the identity factors are skipped.
             if let Operation::Linear {
                 input,
                 options,
@@ -1941,61 +3123,171 @@ mod adapter {
                 let out_id = outputs[0];
                 let alpha = options.as_ref().map(|o| o.alpha as f32).unwrap_or(1.0);
                 let beta = options.as_ref().map(|o| o.beta as f32).unwrap_or(0.0);
+                let in_dims = {
+                    let dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                    if dims.is_empty() || dims.iter().any(|&d| d <= 0) {
+                        vec![1]
+                    } else {
+                        dims
+                    }
+                };
+                let in_dtype = graph.operands[*input as usize].descriptor.data_type;
+                let mut result: Option<ddk_CannOperatorHandle> = None;
+                for (op_type, suffix, factor, identity) in [
+                    ("Mul", "alpha", alpha, 1.0_f32),
+                    ("Add", "beta", beta, 0.0_f32),
+                ] {
+                    if factor == identity {
+                        continue;
+                    }
+                    let factor_const = make_const(
+                        &format!("linear_{suffix}_{out_id}"),
+                        &value_const_bytes(in_dtype, &[factor]),
+                        &[1],
+                        cann_data_type(in_dtype),
+                        0,
+                    );
+                    guard.extra_ops.push(factor_const);
+                    let compute = create_op(
+                        op_type,
+                        &format!("linear_{suffix}_op_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    match result {
+                        Some(handle) => connect_input(compute, "x1", handle)?,
+                        None => connect_src_input(compute, "x1", *input, &handles, &split_out)?,
+                    }
+                    connect_input(compute, "x2", factor_const)?;
+                    result = Some(compute);
+                }
+
+                let out_handle = match result {
+                    Some(handle) => handle,
+                    // alpha=1, beta=0: the output is the input unchanged.
+                    // Reshape of a constant fails at inference, and the shape is
+                    // already unchanged, so a constant is used as-is.
+                    None if graph.constant_operand_ids_to_handles.contains_key(input) => {
+                        handles[*input as usize]
+                    }
+                    None => {
+                        let reshape = create_op(
+                            "Reshape",
+                            &format!("linear_identity_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?;
+                        connect_src_input(reshape, "x", *input, &handles, &split_out)?;
+                        let shape_vals: Vec<i32> = in_dims.iter().map(|&d| d as i32).collect();
+                        let shape_const = make_const(
+                            &format!("linear_identity_shape_{out_id}"),
+                            bytemuck::cast_slice(&shape_vals),
+                            &[shape_vals.len() as i64],
+                            ddk_CannDataType::CANN_DT_INT32,
+                            2,
+                        );
+                        guard.extra_ops.push(shape_const);
+                        connect_input(reshape, "shape", shape_const)?;
+                        reshape
+                    }
+                };
+                handles[out_id as usize] = out_handle;
+                continue;
+            }
+
+            // instanceNormalization = (x - mean) / sqrt(var + eps) * scale + bias,
+            // with mean/var over the spatial axes (NCHW; NHWC is transposed first).
+            if let Operation::InstanceNormalization {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let out_id = outputs[0];
+                let opts = options.clone().unwrap_or_default();
+                let is_nhwc = opts.layout.eq_ignore_ascii_case("nhwc");
+                let x = if is_nhwc {
+                    emit_transpose(
+                        &format!("instnorm_in_nhwc_{out_id}"),
+                        handles[*input as usize],
+                        &[0, 3, 1, 2],
+                        &mut guard.extra_ops,
+                    )?
+                } else {
+                    handles[*input as usize]
+                };
+                let descriptor = &graph.operands[*input as usize].descriptor;
+                let declared = descriptor_dims(descriptor);
+                if declared.len() != 4 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "instanceNormalization needs a 4-D input, got {declared:?}"
+                        ),
+                    });
+                }
+                // The computation runs in NCHW, so use NCHW dims even for NHWC input.
+                let in_dims = if is_nhwc {
+                    vec![declared[0], declared[3], declared[1], declared[2]]
+                } else {
+                    declared.clone()
+                };
+                let out_handle = emit_instance_norm(
+                    &opts,
+                    x,
+                    &in_dims,
+                    descriptor.data_type,
+                    &format!("instnorm_{out_id}"),
+                    graph,
+                    &handles,
+                    &split_out,
+                    &mut guard.extra_ops,
+                )?;
+                // The dedicated blocks `continue` before the generic output
+                // transpose, so undo the NHWC normalization here.
+                let out_handle = if is_nhwc {
+                    emit_transpose(
+                        &format!("instnorm_out_nhwc_{out_id}"),
+                        out_handle,
+                        &[0, 2, 3, 1],
+                        &mut guard.extra_ops,
+                    )?
+                } else {
+                    out_handle
+                };
+                handles[out_id as usize] = out_handle;
+                continue;
+            }
+
+            // layerNormalization = (x - mean) / sqrt(var + eps) * scale + bias,
+            // with mean/var over `axes` (default: all but the first).
+            if let Operation::LayerNormalization {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let out_id = outputs[0];
+                let opts = options.clone().unwrap_or_default();
                 let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
-                let shape_vals: Vec<i32> = in_dims.iter().map(|&d| d as i32).collect();
-                let shape_const = make_const(
-                    &format!("linear_shape_{out_id}"),
-                    bytemuck::cast_slice(&shape_vals),
-                    &[shape_vals.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(shape_const);
-
-                let alpha_const = make_const(
-                    &format!("linear_alpha_{out_id}"),
-                    bytemuck::cast_slice(&[alpha]),
-                    &[1],
-                    ddk_CannDataType::CANN_DT_FLOAT,
-                    0,
-                );
-                let beta_const = make_const(
-                    &format!("linear_beta_{out_id}"),
-                    bytemuck::cast_slice(&[beta]),
-                    &[1],
-                    ddk_CannDataType::CANN_DT_FLOAT,
-                    0,
-                );
-                guard.extra_ops.push(alpha_const);
-                guard.extra_ops.push(beta_const);
-
-                let alpha_b = create_op(
-                    "Expand",
-                    &format!("linear_alpha_b_{out_id}"),
+                let out_handle = emit_layer_norm(
+                    &opts,
+                    handles[*input as usize],
+                    &in_dims,
+                    graph.operands[*input as usize].descriptor.data_type,
+                    &format!("layernorm_{out_id}"),
+                    graph,
+                    &handles,
+                    &split_out,
                     &mut guard.extra_ops,
                 )?;
-                connect_input(alpha_b, "x", alpha_const)?;
-                connect_input(alpha_b, "shape", shape_const)?;
-                let beta_b = create_op(
-                    "Expand",
-                    &format!("linear_beta_b_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_input(beta_b, "x", beta_const)?;
-                connect_input(beta_b, "shape", shape_const)?;
-
-                let mul = create_op("Mul", &format!("linear_mul_{out_id}"), &mut guard.extra_ops)?;
-                connect_src_input(mul, "x1", *input, &handles, &split_out)?;
-                connect_input(mul, "x2", alpha_b)?;
-                let add = create_op("Add", &format!("linear_add_{out_id}"), &mut guard.extra_ops)?;
-                connect_input(add, "x1", mul)?;
-                connect_input(add, "x2", beta_b)?;
-
-                handles[out_id as usize] = add;
+                handles[out_id as usize] = out_handle;
                 continue;
             }
 
             // reverse via hiai::op::StridedSliceV2 (begin/end/strides + end_mask).
+            // reverse: chain Gather with reversed indices per axis. The NPU's
+            // StridedSliceV2 rejects the negative strides this used to emit.
             if let Operation::Reverse {
                 input,
                 options,
@@ -2006,59 +3298,52 @@ mod adapter {
                 let out_id = outputs[0];
                 let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
                 let rank = in_dims.len();
-                let axes: Vec<u32> = options
+                let mut axes: Vec<u32> = options
                     .as_ref()
                     .and_then(|o| o.axes.clone())
                     .unwrap_or_else(|| (0..rank as u32).collect());
+                axes.sort_unstable();
 
-                let mut begin: Vec<i32> = vec![0; rank];
-                let end: Vec<i32> = vec![-1; rank];
-                let mut strides: Vec<i32> = vec![1; rank];
-                let mut end_mask: i64 = 0;
-                for &ax in &axes {
-                    if (ax as usize) < rank {
-                        begin[ax as usize] = in_dims[ax as usize] as i32 - 1;
-                        strides[ax as usize] = -1;
-                        end_mask |= 1 << ax;
+                let mut current = handles[*input as usize];
+                for (step, &ax) in axes.iter().enumerate() {
+                    if ax as usize >= rank {
+                        return Err(GraphError::ConversionFailed {
+                            format: "cann".into(),
+                            reason: format!("reverse axis {ax} is outside rank {rank}"),
+                        });
                     }
+                    let dim = in_dims[ax as usize];
+                    if dim <= 0 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "cann".into(),
+                            reason: format!("reverse needs static dims, got {in_dims:?}"),
+                        });
+                    }
+                    let indices: Vec<i32> = (0..dim as i32).rev().collect();
+                    let indices_const = make_const(
+                        &format!("reverse_idx_{out_id}_{step}"),
+                        bytemuck::cast_slice(&indices),
+                        &[dim],
+                        ddk_CannDataType::CANN_DT_INT32,
+                        2,
+                    );
+                    guard.extra_ops.push(indices_const);
+                    let gather = create_op(
+                        "Gather",
+                        &format!("reverse_gather_{out_id}_{step}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    if step == 0 {
+                        connect_src_input(gather, "x", *input, &handles, &split_out)?;
+                    } else {
+                        connect_input(gather, "x", current)?;
+                    }
+                    connect_input(gather, "indices", indices_const)?;
+                    set_int64_attr(gather, "axis", ax as i64);
+                    current = gather;
                 }
 
-                let slice = create_op(
-                    "StridedSliceV2",
-                    &format!("reverse_slice_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(slice, "x", *input, &handles, &split_out)?;
-                let begin_const = make_const(
-                    &format!("reverse_begin_{out_id}"),
-                    bytemuck::cast_slice(&begin),
-                    &[rank as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                let end_const = make_const(
-                    &format!("reverse_end_{out_id}"),
-                    bytemuck::cast_slice(&end),
-                    &[rank as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                let strides_const = make_const(
-                    &format!("reverse_strides_{out_id}"),
-                    bytemuck::cast_slice(&strides),
-                    &[rank as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(begin_const);
-                guard.extra_ops.push(end_const);
-                guard.extra_ops.push(strides_const);
-                connect_input(slice, "begin", begin_const)?;
-                connect_input(slice, "end", end_const)?;
-                connect_input(slice, "strides", strides_const)?;
-                set_int64_attr(slice, "end_mask", end_mask);
-
-                handles[out_id as usize] = slice;
+                handles[out_id as usize] = current;
                 continue;
             }
 
@@ -2071,29 +3356,75 @@ mod adapter {
                 ..
             } = op
             {
-                let scale_handle = handles[*scale as usize];
                 let out_id = outputs[0];
+                // Constants are re-emitted at the input shape as f32: the NPU
+                // rejects single-channel constant broadcasts, and an int8
+                // constant is already dequantized to f32 at creation.
+                let in_dims = {
+                    let dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                    if dims.is_empty() || dims.iter().any(|&d| d <= 0) {
+                        vec![1]
+                    } else {
+                        dims
+                    }
+                };
+                let rank = in_dims.len();
+                let scale_handle = emit_const_as(
+                    &format!("dequant_scale_{out_id}"),
+                    *scale,
+                    &in_dims,
+                    &aligned_dims(
+                        &descriptor_dims(&graph.operands[*scale as usize].descriptor),
+                        rank,
+                    ),
+                    DataType::Float32,
+                    graph,
+                    &mut guard.extra_ops,
+                )
+                .unwrap_or(handles[*scale as usize]);
 
                 let src_dtype = graph.operands[*input as usize].descriptor.data_type;
-                let cast = create_op(
-                    "Cast",
-                    &format!("dequant_cast_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(cast, "x", *input, &handles, &split_out)?;
-                set_int64_attr(cast, "src_dtype", cann_data_type(src_dtype) as i64);
-                set_int64_attr(cast, "dst_dtype", ddk_CannDataType::CANN_DT_FLOAT as i64);
+                // An 8-bit constant is already emitted as f32 by the const loop,
+                // so a Cast from int8/uint8 would contradict the tensor dtype.
+                let cast = if matches!(src_dtype, DataType::Int8 | DataType::Uint8)
+                    && graph.constant_operand_ids_to_handles.contains_key(input)
+                {
+                    handles[*input as usize]
+                } else {
+                    let cast = create_op(
+                        "Cast",
+                        &format!("dequant_cast_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_src_input(cast, "x", *input, &handles, &split_out)?;
+                    set_int64_attr(cast, "src_dtype", cann_data_type(src_dtype) as i64);
+                    set_int64_attr(cast, "dst_dtype", ddk_CannDataType::CANN_DT_FLOAT as i64);
+                    cast
+                };
 
                 // With no zero point the value is already unbiased, so Mul reads the Cast output: a Sub
                 // with only x1 connected would be rejected or read garbage.
                 let x1 = if let Some(zp_id) = zero_point {
+                    let zp_handle = emit_const_as(
+                        &format!("dequant_zp_{out_id}"),
+                        *zp_id,
+                        &in_dims,
+                        &aligned_dims(
+                            &descriptor_dims(&graph.operands[*zp_id as usize].descriptor),
+                            rank,
+                        ),
+                        DataType::Float32,
+                        graph,
+                        &mut guard.extra_ops,
+                    )
+                    .unwrap_or(handles[*zp_id as usize]);
                     let sub = create_op(
                         "Sub",
                         &format!("dequant_sub_{out_id}"),
                         &mut guard.extra_ops,
                     )?;
                     connect_input(sub, "x1", cast)?;
-                    connect_input(sub, "x2", handles[*zp_id as usize])?;
+                    connect_input(sub, "x2", zp_handle)?;
                     sub
                 } else {
                     cast
@@ -2109,6 +3440,615 @@ mod adapter {
 
                 handles[out_id as usize] = mul;
                 continue;
+            }
+
+            // clamp: the adapter maps the `Clamp` type to the DDK's
+            // `ClipByValue`, whose bounds are tensor inputs rather than attrs.
+            if let Operation::Clamp {
+                input,
+                options,
+                outputs,
+            } = op
+            {
+                let out_id = outputs[0];
+                let dtype = graph.operands[out_id as usize].descriptor.data_type;
+                if matches!(dtype, DataType::Float16 | DataType::Float32) {
+                    let min_value = options
+                        .as_ref()
+                        .and_then(|o| o.min_value.as_ref())
+                        .and_then(json_number_f32);
+                    let max_value = options
+                        .as_ref()
+                        .and_then(|o| o.max_value.as_ref())
+                        .and_then(json_number_f32);
+                    if min_value.is_none() && max_value.is_none() {
+                        // WebNN defaults to (-infinity, +infinity), so clamp is
+                        // the identity. ClipByValue evaluates in f16, so the
+                        // finite +/-65504 defaults below would clip large f32
+                        // values and infinities.
+                        let out = if graph.constant_operand_ids_to_handles.contains_key(input) {
+                            handles[*input as usize]
+                        } else {
+                            let dims = {
+                                let dims =
+                                    descriptor_dims(&graph.operands[*input as usize].descriptor);
+                                if dims.is_empty() || dims.iter().any(|&d| d <= 0) {
+                                    vec![1]
+                                } else {
+                                    dims
+                                }
+                            };
+                            let reshape = create_op(
+                                "Reshape",
+                                &format!("clamp_identity_{out_id}"),
+                                &mut guard.extra_ops,
+                            )?;
+                            connect_src_input(reshape, "x", *input, &handles, &split_out)?;
+                            let shape_vals: Vec<i32> = dims.iter().map(|&d| d as i32).collect();
+                            let shape_const = make_const(
+                                &format!("clamp_identity_shape_{out_id}"),
+                                bytemuck::cast_slice(&shape_vals),
+                                &[shape_vals.len() as i64],
+                                ddk_CannDataType::CANN_DT_INT32,
+                                2,
+                            );
+                            guard.extra_ops.push(shape_const);
+                            connect_input(reshape, "shape", shape_const)?;
+                            reshape
+                        };
+                        handles[out_id as usize] = out;
+                        continue;
+                    }
+                    // WebNN defaults to unbounded; use the f16 range because
+                    // the NPU evaluates in f16 and f32::MAX becomes infinity.
+                    let (default_min, default_max) = (-65504.0, 65504.0);
+                    let min = min_value.unwrap_or(default_min);
+                    let max = max_value.unwrap_or(default_max);
+                    // `ClipByValue` does not broadcast a one-element bound on
+                    // this DDK (the model build fails), so the bounds are
+                    // emitted at the input shape. They stay f32 because the
+                    // kernel reads them as f32 even when `x` is f16, so an
+                    // f16-encoded constant would be misinterpreted.
+                    let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                    let bound_dims = if in_dims.is_empty() || in_dims.iter().any(|&d| d <= 0) {
+                        vec![1]
+                    } else {
+                        in_dims
+                    };
+                    let bound_count: usize = bound_dims.iter().map(|&d| d as usize).product();
+                    let clip =
+                        create_op("Clamp", &format!("clamp_{out_id}"), &mut guard.extra_ops)?;
+                    connect_src_input(clip, "x", *input, &handles, &split_out)?;
+                    for (name, value) in [("clip_value_min", min), ("clip_value_max", max)] {
+                        let bound = make_const(
+                            &format!("clamp_{name}_{out_id}"),
+                            &value_const_bytes(DataType::Float32, &vec![value; bound_count]),
+                            &bound_dims,
+                            ddk_CannDataType::CANN_DT_FLOAT,
+                            0,
+                        );
+                        guard.extra_ops.push(bound);
+                        connect_input(clip, name, bound)?;
+                    }
+                    handles[out_id as usize] = clip;
+                    continue;
+                }
+            }
+
+            // where: the adapter maps the `Where` type to the DDK's `Select`,
+            // which only broadcasts the first dimension, so the operands are
+            // expanded to the output shape first.
+            if let Operation::Where {
+                condition,
+                true_value,
+                false_value,
+                outputs,
+                ..
+            } = op
+            {
+                let out_id = outputs[0];
+                // The DDK has no 0-D tensors; describe a scalar as `[1]`.
+                let out_dims = {
+                    let dims = descriptor_dims(&graph.operands[out_id as usize].descriptor);
+                    if dims.is_empty() { vec![1] } else { dims }
+                };
+                let rank = out_dims.len();
+                let select = create_op("Where", &format!("where_{out_id}"), &mut guard.extra_ops)?;
+
+                let cond_dims = descriptor_dims(&graph.operands[*condition as usize].descriptor);
+                let cond = if let Some(bits) = emit_const_as_bool(
+                    &format!("where_cond_{out_id}"),
+                    *condition,
+                    &out_dims,
+                    &aligned_dims(&cond_dims, rank),
+                    graph,
+                    &mut guard.extra_ops,
+                ) {
+                    bits
+                } else {
+                    let expanded = emit_expanded_param(
+                        &format!("where_cond_{out_id}"),
+                        *condition,
+                        &out_dims,
+                        &aligned_dims(&cond_dims, rank),
+                        graph,
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?;
+                    if graph.operands[*condition as usize].descriptor.data_type == DataType::Uint8 {
+                        let cast = create_op(
+                            "Cast",
+                            &format!("where_cond_cast_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?;
+                        connect_input(cast, "x", expanded)?;
+                        set_int64_attr(cast, "src_dtype", cann_data_type(DataType::Uint8) as i64);
+                        set_int64_attr(cast, "dst_dtype", ddk_CannDataType::CANN_DT_BOOL as i64);
+                        cast
+                    } else {
+                        expanded
+                    }
+                };
+                connect_input(select, "condition", cond)?;
+
+                for (name, id) in [("x1", *true_value), ("x2", *false_value)] {
+                    let dims = descriptor_dims(&graph.operands[id as usize].descriptor);
+                    if dims == out_dims {
+                        connect_src_input(select, name, id, &handles, &split_out)?;
+                    } else {
+                        let expanded = emit_expanded_param(
+                            &format!("where_{name}_{out_id}"),
+                            id,
+                            &out_dims,
+                            &aligned_dims(&dims, rank),
+                            graph,
+                            &handles,
+                            &split_out,
+                            &mut guard.extra_ops,
+                        )?;
+                        connect_input(select, name, expanded)?;
+                    }
+                }
+
+                handles[out_id as usize] = select;
+                continue;
+            }
+
+            // gemm: `GemmD` only accepts f32 operands, so f16 inputs are
+            // cast to f32 and the result back to f16.
+            if let Operation::Gemm {
+                a,
+                b,
+                options,
+                outputs,
+            } = op
+            {
+                let out_id = outputs[0];
+                if graph.operands[out_id as usize].descriptor.data_type == DataType::Float16 {
+                    let gemm = create_op("Gemm", &format!("gemm_{out_id}"), &mut guard.extra_ops)?;
+                    let tag = format!("{out_id}");
+                    for (name, id) in [("a", *a), ("b", *b)] {
+                        connect_operand_f32(
+                            gemm,
+                            name,
+                            id,
+                            &tag,
+                            graph,
+                            &handles,
+                            &split_out,
+                            &mut guard.extra_ops,
+                        )?;
+                    }
+                    if let Some(o) = options.as_ref() {
+                        set_float_attr(gemm, "alpha", o.alpha as f32);
+                        set_float_attr(gemm, "beta", o.beta as f32);
+                        set_bool_attr(gemm, "transpose_a", o.a_transpose);
+                        set_bool_attr(gemm, "transpose_b", o.b_transpose);
+                        if let Some(c_id) = o.c {
+                            connect_operand_f32(
+                                gemm,
+                                "c",
+                                c_id,
+                                &tag,
+                                graph,
+                                &handles,
+                                &split_out,
+                                &mut guard.extra_ops,
+                            )?;
+                        }
+                    }
+                    let out = create_op(
+                        "Cast",
+                        &format!("gemm_out_f16_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_input(out, "x", gemm)?;
+                    set_int64_attr(out, "src_dtype", cann_data_type(DataType::Float32) as i64);
+                    set_int64_attr(out, "dst_dtype", cann_data_type(DataType::Float16) as i64);
+                    handles[out_id as usize] = out;
+                    continue;
+                }
+            }
+
+            // The DDK's Equal/Greater/Lesser kernels reject same-shaped float
+            // operands, while NotEqual accepts them, so the float comparisons
+            // are expressed through NotEqual:
+            //   equal(a, b)          = !notEqual(a, b)
+            //   greater(a, b)        = notEqual(relu(a - b), 0)
+            //   lesser(a, b)         = notEqual(relu(b - a), 0)
+            //   greaterOrEqual(a, b) = equal(a, b) || greater(a, b)
+            //   lesserOrEqual(a, b)  = equal(a, b) || lesser(a, b)
+            // The difference alone is not IEEE: `inf - inf` is NaN, so equal
+            // infinities would compare greater, and NaN would compare greater
+            // or lesser. Comparisons therefore also require `a != b` and
+            // neither non-constant side to be NaN. A NotEqual of two constants
+            // fails graph validation, so two-constant comparisons keep the
+            // difference form, and two-constant f32 comparisons use the
+            // generic kernels. f16 NotEqual fails at inference, so f16
+            // operands are compared as f32.
+            if let Some((a, b, kind)) = match op {
+                Operation::Equal { a, b, .. } => Some((*a, *b, 0)),
+                Operation::Greater { a, b, .. } => Some((*a, *b, 1)),
+                Operation::Lesser { a, b, .. } => Some((*a, *b, 2)),
+                Operation::GreaterOrEqual { a, b, .. } => Some((*a, *b, 3)),
+                Operation::LesserOrEqual { a, b, .. } => Some((*a, *b, 4)),
+                Operation::NotEqual { a, b, .. } => Some((*a, *b, 5)),
+                _ => None,
+            } {
+                let out_id = op_outputs(op)[0];
+                let in_dtype = graph.operands[a as usize].descriptor.data_type;
+                let constant = |id: u32| {
+                    graph.operands[id as usize].kind == crate::graph::OperandKind::Constant
+                };
+                let both_constant = constant(a) && constant(b);
+                // Two-constant f32 comparisons keep the generic kernels, except
+                // notEqual: it has no NaN/infinity exception, and comparing the
+                // re-emitted f32 constants builds where the raw f16 constants do not.
+                let constant_f32 = in_dtype == DataType::Float32 && both_constant && kind != 5;
+                if matches!(in_dtype, DataType::Float16 | DataType::Float32) && !constant_f32 {
+                    let out_dims = {
+                        let dims = descriptor_dims(&graph.operands[out_id as usize].descriptor);
+                        if dims.is_empty() { vec![1] } else { dims }
+                    };
+                    let name = format!("cmp_{out_id}");
+                    let not_equal =
+                        |lhs: ddk_CannOperatorHandle,
+                         rhs: ddk_CannOperatorHandle,
+                         tag: &str,
+                         extra_ops: &mut Vec<ddk_CannOperatorHandle>|
+                         -> Result<ddk_CannOperatorHandle, GraphError> {
+                            let ne = create_op("NotEqual", &format!("{name}_{tag}"), extra_ops)?;
+                            connect_input(ne, "x1", lhs)?;
+                            connect_input(ne, "x2", rhs)?;
+                            Ok(ne)
+                        };
+                    // Compare two operands by id as f32: an f16 operand is
+                    // cast, or re-emitted as f32 when constant. f16 NotEqual
+                    // fails at inference.
+                    let not_equal_operands =
+                        |lhs: u32,
+                         rhs: u32,
+                         tag: &str,
+                         extra_ops: &mut Vec<ddk_CannOperatorHandle>|
+                         -> Result<ddk_CannOperatorHandle, GraphError> {
+                            let ne = create_op("NotEqual", &format!("{name}_{tag}"), extra_ops)?;
+                            let unique = format!("{tag}_{out_id}");
+                            connect_operand_f32(
+                                ne, "x1", lhs, &unique, graph, &handles, &split_out, extra_ops,
+                            )?;
+                            connect_operand_f32(
+                                ne, "x2", rhs, &unique, graph, &handles, &split_out, extra_ops,
+                            )?;
+                            Ok(ne)
+                        };
+                    let logical =
+                        |op_type: &str,
+                         lhs: ddk_CannOperatorHandle,
+                         rhs: ddk_CannOperatorHandle,
+                         tag: &str,
+                         extra_ops: &mut Vec<ddk_CannOperatorHandle>|
+                         -> Result<ddk_CannOperatorHandle, GraphError> {
+                            let op = create_op(op_type, &format!("{name}_{tag}"), extra_ops)?;
+                            connect_input(op, "x1", lhs)?;
+                            connect_input(op, "x2", rhs)?;
+                            Ok(op)
+                        };
+                    let logical_not =
+                        |x: ddk_CannOperatorHandle,
+                         tag: &str,
+                         extra_ops: &mut Vec<ddk_CannOperatorHandle>|
+                         -> Result<ddk_CannOperatorHandle, GraphError> {
+                            let not = create_op("LogicalNot", &format!("{name}_{tag}"), extra_ops)?;
+                            connect_input(not, "x", x)?;
+                            Ok(not)
+                        };
+                    // relu(lhs - rhs) != 0, i.e. lhs > rhs.
+                    let greater =
+                        |lhs: u32,
+                         rhs: u32,
+                         extra_ops: &mut Vec<ddk_CannOperatorHandle>|
+                         -> Result<ddk_CannOperatorHandle, GraphError> {
+                            let sub = create_op("Sub", &format!("{name}_sub"), extra_ops)?;
+                            connect_src_input(sub, "x1", lhs, &handles, &split_out)?;
+                            connect_src_input(sub, "x2", rhs, &handles, &split_out)?;
+                            let relu = create_op("ReLU", &format!("{name}_relu"), extra_ops)?;
+                            connect_input(relu, "x", sub)?;
+                            set_int64_attr(relu, "mode", 1);
+                            // f16 NotEqual fails at inference, so f16
+                            // comparisons run in f32.
+                            let (relu, cmp_dtype) = if in_dtype == DataType::Float16 {
+                                let cast = emit_cast_chain(
+                                    relu,
+                                    DataType::Float16,
+                                    DataType::Float32,
+                                    &format!("{name}_relu_f32"),
+                                    extra_ops,
+                                )?;
+                                (cast, DataType::Float32)
+                            } else {
+                                (relu, in_dtype)
+                            };
+                            let count: usize =
+                                out_dims.iter().map(|&d| d.max(1) as usize).product();
+                            let zeros = make_const(
+                                &format!("{name}_zeros"),
+                                &value_const_bytes(cmp_dtype, &vec![0.0; count]),
+                                &out_dims,
+                                cann_data_type(cmp_dtype),
+                                0,
+                            );
+                            extra_ops.push(zeros);
+                            let difference = not_equal(relu, zeros, "gt", extra_ops)?;
+                            if constant(lhs) && constant(rhs) {
+                                // A NotEqual of two constants fails graph
+                                // validation, so keep the difference form.
+                                return Ok(difference);
+                            }
+                            let pair = not_equal_operands(lhs, rhs, "pair", extra_ops)?;
+                            let ordered =
+                                logical("LogicalAnd", difference, pair, "ordered", extra_ops)?;
+                            // A constant side has no NaN to guard, and a
+                            // NotEqual of a constant with itself would fail
+                            // graph validation.
+                            let ordered = if constant(lhs) {
+                                ordered
+                            } else {
+                                let lhs_nan = logical_not(
+                                    not_equal_operands(lhs, lhs, "lhs_nan", extra_ops)?,
+                                    "lhs_not_nan",
+                                    extra_ops,
+                                )?;
+                                logical("LogicalAnd", ordered, lhs_nan, "lhs_finite", extra_ops)?
+                            };
+                            if constant(rhs) {
+                                Ok(ordered)
+                            } else {
+                                let rhs_nan = logical_not(
+                                    not_equal_operands(rhs, rhs, "rhs_nan", extra_ops)?,
+                                    "rhs_not_nan",
+                                    extra_ops,
+                                )?;
+                                logical("LogicalAnd", ordered, rhs_nan, "rhs_finite", extra_ops)
+                            }
+                        };
+                    let equal = |extra_ops: &mut Vec<ddk_CannOperatorHandle>| {
+                        let ne = not_equal_operands(a, b, "eq_pair", extra_ops)?;
+                        logical_not(ne, "eq", extra_ops)
+                    };
+                    let result = match kind {
+                        0 => equal(&mut guard.extra_ops)?,
+                        1 => greater(a, b, &mut guard.extra_ops)?,
+                        2 => greater(b, a, &mut guard.extra_ops)?,
+                        3 => {
+                            let eq = equal(&mut guard.extra_ops)?;
+                            let gt = greater(a, b, &mut guard.extra_ops)?;
+                            logical("LogicalOr", eq, gt, "ge", &mut guard.extra_ops)?
+                        }
+                        5 => not_equal_operands(a, b, "ne", &mut guard.extra_ops)?,
+                        _ => {
+                            let eq = equal(&mut guard.extra_ops)?;
+                            let lt = greater(b, a, &mut guard.extra_ops)?;
+                            logical("LogicalOr", eq, lt, "le", &mut guard.extra_ops)?
+                        }
+                    };
+                    handles[out_id as usize] =
+                        emit_bool_output_cast(result, out_id, graph, &mut guard.extra_ops)?;
+                    continue;
+                }
+            }
+
+            // batchNormalization: `BNInference` takes f32 tensors with the
+            // channel axis at position 1, so f16 graphs and channels-last
+            // inputs are normalized through casts and transposes.
+            if let Operation::BatchNormalization {
+                input,
+                mean,
+                variance,
+                options,
+                outputs,
+            } = op
+            {
+                let out_id = outputs[0];
+                let out_dtype = graph.operands[out_id as usize].descriptor.data_type;
+                let in_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                let rank = in_dims.len();
+                let axis = options.as_ref().map(|o| o.axis as usize).unwrap_or(1);
+                let perm: Option<Vec<i32>> = if rank == 4 && axis > 1 && axis < 4 {
+                    let mut order = vec![0, axis as i32];
+                    order.extend((1..4).filter(|&d| d != axis as i32));
+                    Some(order)
+                } else {
+                    None
+                };
+                let needs_f32 = out_dtype == DataType::Float16;
+                // A rank-1 tensor has no other axis to confuse, so axis 0 is
+                // the channel axis BNInference already normalizes.
+                if axis != 1 && perm.is_none() && rank != 1 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "batchNormalization needs axis 1 or a 4-D channel axis for f16, got axis {axis}"
+                        ),
+                    });
+                }
+                if perm.is_some() || needs_f32 {
+                    let tag = format!("{out_id}");
+                    let (mut x, inverse) = match &perm {
+                        Some(order) => {
+                            let transposed = emit_transpose(
+                                &format!("bn_in_perm_{out_id}"),
+                                handles[*input as usize],
+                                order,
+                                &mut guard.extra_ops,
+                            )?;
+                            let mut inverse = vec![0i32; order.len()];
+                            for (position, &axis) in order.iter().enumerate() {
+                                inverse[axis as usize] = position as i32;
+                            }
+                            (transposed, Some(inverse))
+                        }
+                        None => (handles[*input as usize], None),
+                    };
+                    if needs_f32 {
+                        x = emit_cast_chain(
+                            x,
+                            DataType::Float16,
+                            DataType::Float32,
+                            &format!("bn_x_f32_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?;
+                    }
+                    let bn = create_op(
+                        "BatchNormalization",
+                        &format!("bn_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_input(bn, "x", x)?;
+                    for (name, id) in [("mean", *mean), ("variance", *variance)] {
+                        connect_operand_f32(
+                            bn,
+                            name,
+                            id,
+                            &tag,
+                            graph,
+                            &handles,
+                            &split_out,
+                            &mut guard.extra_ops,
+                        )?;
+                    }
+                    if let Some(o) = options.as_ref() {
+                        if let Some(id) = o.scale {
+                            connect_operand_f32(
+                                bn,
+                                "scale",
+                                id,
+                                &tag,
+                                graph,
+                                &handles,
+                                &split_out,
+                                &mut guard.extra_ops,
+                            )?;
+                        }
+                        if let Some(id) = o.bias {
+                            connect_operand_f32(
+                                bn,
+                                "offset",
+                                id,
+                                &tag,
+                                graph,
+                                &handles,
+                                &split_out,
+                                &mut guard.extra_ops,
+                            )?;
+                        }
+                    }
+                    let epsilon = options.as_ref().map(|o| o.epsilon as f32).unwrap_or(1e-5);
+                    set_float_attr(bn, "epsilon", epsilon);
+                    let mut y = if needs_f32 {
+                        emit_cast_chain(
+                            bn,
+                            DataType::Float32,
+                            DataType::Float16,
+                            &format!("bn_out_f16_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?
+                    } else {
+                        bn
+                    };
+                    if let Some(inverse) = inverse {
+                        y = emit_transpose(
+                            &format!("bn_out_perm_{out_id}"),
+                            y,
+                            &inverse,
+                            &mut guard.extra_ops,
+                        )?;
+                    }
+                    handles[out_id as usize] = y;
+                    continue;
+                }
+            }
+
+            // slice with strides: the DDK `Slice` op takes no strides, so the
+            // strided form lowers to `StridedSliceV2`.
+            if let Operation::Slice {
+                input,
+                starts,
+                sizes,
+                options,
+                outputs,
+            } = op
+            {
+                let strides: Vec<i32> = options
+                    .as_ref()
+                    .map(|o| o.strides.iter().map(|&s| s as i32).collect())
+                    .unwrap_or_default();
+                if strides.iter().any(|&s| s != 1) {
+                    if sizes.iter().any(|size| {
+                        !matches!(size, crate::operator_options::MLDimension::Static(_))
+                    }) {
+                        return Err(GraphError::ConversionFailed {
+                            format: "cann".into(),
+                            reason: "slice with strides needs static sizes".into(),
+                        });
+                    }
+                    let out_id = outputs[0];
+                    let rank = starts.len();
+                    let slice = create_op(
+                        "StridedSliceV2",
+                        &format!("slice_strided_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_src_input(slice, "x", *input, &handles, &split_out)?;
+                    // WebNN `sizes` is the extent of the input window, so an
+                    // exclusive `end = start + size` with `strides` yields
+                    // ceil(size / stride) elements per dimension.
+                    let begin: Vec<i32> = starts.iter().map(|&s| s as i32).collect();
+                    let end: Vec<i32> = starts
+                        .iter()
+                        .zip(sizes.iter())
+                        .map(|(&s, size)| s as i32 + size.static_or_max() as i32)
+                        .collect();
+                    let axes: Vec<i32> = (0..rank as i32).collect();
+                    for (name, values) in [
+                        ("begin", begin),
+                        ("end", end),
+                        ("axes", axes),
+                        ("strides", strides),
+                    ] {
+                        let input_const = make_const(
+                            &format!("slice_strided_{name}_{out_id}"),
+                            bytemuck::cast_slice(&values),
+                            &[values.len() as i64],
+                            ddk_CannDataType::CANN_DT_INT32,
+                            2,
+                        );
+                        guard.extra_ops.push(input_const);
+                        connect_input(slice, name, input_const)?;
+                    }
+                    handles[out_id as usize] = slice;
+                    continue;
+                }
             }
 
             let operator_type_name = match webnn_op_to_hiai(op) {
@@ -2152,7 +4092,7 @@ mod adapter {
                 // pair in NCHW: transpose `x`, emit the mask as [1,1,H,W], and
                 // transpose back. `x` must be a single-output producer.
                 let channel_bcast = channel_broadcast_operands(graph, a, b)
-                    .filter(|(x_id, _, _)| !split_out.contains_key(x_id));
+                    .filter(|(x_id, _, _)| !split_out.contains_key(x_id) && !is_logical_op(op));
                 // A mask that nearly matches (batch > 1, another axis order) is emitted unwrapped and
                 // may only fail on device; log it for tracing.
                 if channel_bcast.is_none()
@@ -2186,11 +4126,53 @@ mod adapter {
                     connect_input(compute_op, name_b, rhs_h)?;
                     nhwc_out = true;
                 } else {
-                    let status_a =
-                        unsafe { set_src_input(compute_op, &lhs_name, a, &handles, &split_out) };
-                    let status_b =
-                        unsafe { set_src_input(compute_op, &rhs_name, b, &handles, &split_out) };
-                    if status_a != 0 || status_b != 0 {
+                    let out = op_outputs(op)[0];
+                    let cast_bool = is_logical_op(op);
+                    connect_binary_operand(
+                        compute_op,
+                        &lhs_name,
+                        a,
+                        cast_bool,
+                        &format!("logical_lhs_cast_{out}"),
+                        graph,
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_binary_operand(
+                        compute_op,
+                        &rhs_name,
+                        b,
+                        cast_bool,
+                        &format!("logical_rhs_cast_{out}"),
+                        graph,
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?;
+                }
+            }
+
+            if let Some(input) = unary_op_input(op) {
+                let x_name = CString::new("x").unwrap();
+                let logical_cast = if is_logical_op(op) {
+                    emit_bool_operand_cast(
+                        &format!("logical_x_cast_{}", op_outputs(op)[0]),
+                        input,
+                        graph,
+                        &handles,
+                        &split_out,
+                        &mut guard.extra_ops,
+                    )?
+                } else {
+                    None
+                };
+                if let Some(cast) = logical_cast {
+                    connect_input(compute_op, "x", cast)?;
+                } else {
+                    let status =
+                        unsafe { set_src_input(compute_op, &x_name, input, &handles, &split_out) };
+                    if status != 0 {
                         return Err(GraphError::ConversionFailed {
                             format: "cann".into(),
                             reason: format!(
@@ -2201,23 +4183,9 @@ mod adapter {
                 }
             }
 
-            if let Some(input) = unary_op_input(op) {
-                let x_name = CString::new("x").unwrap();
-                let status =
-                    unsafe { set_src_input(compute_op, &x_name, input, &handles, &split_out) };
-                if status != 0 {
-                    return Err(GraphError::ConversionFailed {
-                        format: "cann".into(),
-                        reason: format!(
-                            "cann_operator_set_input for {operator_type_name:?} failed"
-                        ),
-                    });
-                }
-            }
-
-            // Activation / clamp attributes. The generic unary path only wires
-            // the "x" input; these ops map to hiai::op::Activation (or
-            // ClipByValue) and require the mode / bounds to be set explicitly.
+            // Activation attributes. The generic unary path only wires the "x"
+            // input; these ops map to hiai::op::Activation and require the mode
+            // to be set explicitly.
             let mode_name = CString::new("mode").unwrap();
             match op {
                 Operation::Relu { .. } => unsafe {
@@ -2257,46 +4225,7 @@ mod adapter {
                         ddk_cann_operator_set_attr_float(compute_op, coef_name.as_ptr(), alpha);
                     }
                 }
-                Operation::Clamp { options, .. } => {
-                    let min = options
-                        .as_ref()
-                        .and_then(|o| o.min_value.as_ref())
-                        .and_then(json_number_f32)
-                        .unwrap_or(f32::NEG_INFINITY);
-                    let max = options
-                        .as_ref()
-                        .and_then(|o| o.max_value.as_ref())
-                        .and_then(json_number_f32)
-                        .unwrap_or(f32::INFINITY);
-                    let min_name = CString::new("min").unwrap();
-                    let max_name = CString::new("max").unwrap();
-                    unsafe {
-                        ddk_cann_operator_set_attr_float(compute_op, min_name.as_ptr(), min);
-                        ddk_cann_operator_set_attr_float(compute_op, max_name.as_ptr(), max);
-                    }
-                }
                 _ => {}
-            }
-
-            // Wire Cast via hiai::op::CastT (adapter maps "Cast"; attrs
-            // src_dtype/dst_dtype).
-            if let Operation::Cast { input, outputs, .. } = op {
-                let src_dtype = graph.operands[*input as usize].descriptor.data_type;
-                let dst_dtype = graph.operands[outputs[0] as usize].descriptor.data_type;
-                let src_name = CString::new("src_dtype").unwrap();
-                let dst_name = CString::new("dst_dtype").unwrap();
-                unsafe {
-                    ddk_cann_operator_set_attr_int64(
-                        compute_op,
-                        src_name.as_ptr(),
-                        cann_data_type(src_dtype) as i64,
-                    );
-                    ddk_cann_operator_set_attr_int64(
-                        compute_op,
-                        dst_name.as_ptr(),
-                        cann_data_type(dst_dtype) as i64,
-                    );
-                }
             }
 
             // Wire reductions (sum/mean/max/min/product/l2/logSumExp). L1,
@@ -2566,7 +4495,6 @@ mod adapter {
                 } else {
                     handles[input as usize]
                 };
-                nhwc_out = is_nhwc;
                 let x_name = CString::new("x").unwrap();
                 let status = if is_nhwc {
                     unsafe { set_operand_input(compute_op, &x_name, x_handle) }
@@ -2622,12 +4550,39 @@ mod adapter {
                     }
                 }
 
+                // An explicit output size overrides the requested rounding.
+                let out_dims = descriptor_dims(&graph.operands[out_id as usize].descriptor);
+                let has_output_sizes = options.as_ref().is_some_and(|o| o.output_sizes.is_some());
+                // The DDK defaults `ceil_mode` to 0, so only the ceil case is
+                // set explicitly and the floor path keeps the kernel default.
+                let ceil_mode = !has_output_sizes
+                    && options
+                        .as_ref()
+                        .is_some_and(|o| o.output_shape_rounding.eq_ignore_ascii_case("ceil"));
+                // An explicit output size need not land on the window grid;
+                // extend the trailing padding so the DDK produces that size.
+                if has_output_sizes && out_dims.len() == 4 {
+                    let (out_h, out_w) = if is_nhwc {
+                        (out_dims[1], out_dims[2])
+                    } else {
+                        (out_dims[2], out_dims[3])
+                    };
+                    padding_bottom = padding_bottom
+                        .max((out_h - 1) * stride_h + window_h - default_h - padding_top);
+                    padding_right = padding_right
+                        .max((out_w - 1) * stride_w + window_w - default_w - padding_left);
+                }
+
                 let window: [i64; 2] = [window_h, window_w];
                 let stride: [i64; 2] = [stride_h, stride_w];
                 let pad: [i64; 4] = [padding_top, padding_bottom, padding_left, padding_right];
                 unsafe {
                     let mode_name = CString::new("mode").unwrap();
                     ddk_cann_operator_set_attr_int64(compute_op, mode_name.as_ptr(), pool_mode);
+                    if ceil_mode {
+                        let ceil_name = CString::new("ceil_mode").unwrap();
+                        ddk_cann_operator_set_attr_int64(compute_op, ceil_name.as_ptr(), 1);
+                    }
                     let window_name = CString::new("window").unwrap();
                     ddk_cann_operator_set_attr_int64_list(
                         compute_op,
@@ -2650,6 +4605,88 @@ mod adapter {
                         4,
                     );
                 }
+
+                // CANN's average mode counts pad positions in its divisor while
+                // WebNN divides by the input elements the window covers, and
+                // CANN's L2 mode returns the root-mean-square over those
+                // elements while WebNN returns the root sum of squares. Scale
+                // each output position to match.
+                let dtype = graph.operands[out_id as usize].descriptor.data_type;
+                let mut out_handle = compute_op;
+                if pool_mode != 0 && out_dims.len() == 4 {
+                    let (out_h, out_w) = if is_nhwc {
+                        (out_dims[1], out_dims[2])
+                    } else {
+                        (out_dims[2], out_dims[3])
+                    };
+                    let (n, c) = if is_nhwc {
+                        (out_dims[0], out_dims[3])
+                    } else {
+                        (out_dims[0], out_dims[1])
+                    };
+                    let mut plane = Vec::with_capacity((out_h * out_w) as usize);
+                    let mut needs_correction = false;
+                    for i in 0..out_h {
+                        for j in 0..out_w {
+                            let h0 = i * stride_h - padding_top;
+                            let w0 = j * stride_w - padding_left;
+                            let valid_h = (h0 + window_h).min(default_h) - h0.max(0);
+                            let valid_w = (w0 + window_w).min(default_w) - w0.max(0);
+                            let valid = (valid_h.max(0) * valid_w.max(0)) as f32;
+                            // Elements inside the padded input (pads count as
+                            // zeros in CANN's average divisor).
+                            let padded_h = (h0 + window_h).min(default_h + padding_bottom)
+                                - h0.max(-padding_top);
+                            let padded_w = (w0 + window_w).min(default_w + padding_right)
+                                - w0.max(-padding_left);
+                            let padded = (padded_h.max(0) * padded_w.max(0)) as f32;
+                            let factor = match pool_mode {
+                                1 if valid > 0.0 => padded / valid,
+                                2 if valid > 0.0 => valid.sqrt(),
+                                _ => 1.0,
+                            };
+                            needs_correction |= (factor - 1.0).abs() > f32::EPSILON;
+                            plane.push(factor);
+                        }
+                    }
+                    if needs_correction {
+                        // Expand of a constant fails on-device, so repeat the
+                        // plane across the batch and channel dimensions.
+                        let plane_count = n.max(1) * c.max(1);
+                        let mut factors = Vec::with_capacity(plane.len() * plane_count as usize);
+                        for _ in 0..plane_count {
+                            factors.extend_from_slice(&plane);
+                        }
+                        let mask = make_const(
+                            &format!("pool_scale_{out_id}"),
+                            &value_const_bytes(dtype, &factors),
+                            &[n.max(1), c.max(1), out_h, out_w],
+                            cann_data_type(dtype),
+                            0,
+                        );
+                        guard.extra_ops.push(mask);
+                        let scale = create_op(
+                            "Mul",
+                            &format!("pool_scale_mul_{out_id}"),
+                            &mut guard.extra_ops,
+                        )?;
+                        connect_input(scale, "x1", compute_op)?;
+                        connect_input(scale, "x2", mask)?;
+                        out_handle = scale;
+                    }
+                }
+
+                if is_nhwc {
+                    out_handle = emit_transpose(
+                        &format!("nhwc_out_{out_id}"),
+                        out_handle,
+                        &[0, 2, 3, 1],
+                        &mut guard.extra_ops,
+                    )?;
+                }
+                guard.compute_ops.push(compute_op);
+                handles[out_id as usize] = out_handle;
+                continue;
             }
 
             // Wire ConvTranspose2d as a decomposed Convolution (stride=1 +
@@ -2870,10 +4907,23 @@ mod adapter {
             if let Operation::ArgMax {
                 input,
                 axis,
+                options,
                 outputs,
-                ..
             } = op
             {
+                // `ArgMaxExt2` defaults to an int32 output and a reduced axis;
+                // both WebNN options override that explicitly.
+                set_int64_attr(
+                    compute_op,
+                    "output_type",
+                    cann_data_type(graph.operands[outputs[0] as usize].descriptor.data_type) as i64,
+                );
+                set_bool_attr(
+                    compute_op,
+                    "keep_dims",
+                    options.as_ref().map(|o| o.keep_dimensions).unwrap_or(false),
+                );
+
                 let axis_name_str = CString::new(format!("argmax_axis_{}", outputs[0])).unwrap();
                 let axis_operator = unsafe { ddk_cann_op_const_with_name(axis_name_str.as_ptr()) };
                 let axis_value: i32 = *axis as i32;
@@ -3057,7 +5107,13 @@ mod adapter {
                         ),
                     });
                 }
-                let shape_vals = descriptor_dims(&graph.operands[outputs[0] as usize].descriptor);
+                let mut shape_vals =
+                    descriptor_dims(&graph.operands[outputs[0] as usize].descriptor);
+                if shape_vals.is_empty() {
+                    // A rank-0 target is rejected by GE; the operand still has
+                    // one element, so reshape to `[1]`.
+                    shape_vals = vec![1];
+                }
                 let shape_vals_i32: Vec<i32> = shape_vals.iter().map(|&d| d as i32).collect();
                 let shape_const = make_const(
                     &format!("reshape_shape_{}", outputs[0]),
@@ -3073,30 +5129,16 @@ mod adapter {
                 }
             }
 
-            // Wire Slice via hiai::op::Slice (x + offsets + size). hiai Slice has
-            // no strides, so a strided slice must fail loudly rather than be
-            // silently executed as a contiguous one.
+            // Wire Slice via hiai::op::Slice (x + offsets + size). Strided
+            // slices were lowered to StridedSliceV2 above.
             if let Operation::Slice {
                 input,
                 starts,
                 sizes,
-                options,
                 outputs,
                 ..
             } = op
             {
-                if options
-                    .as_ref()
-                    .is_some_and(|o| o.strides.iter().any(|&s| s != 1))
-                {
-                    return Err(GraphError::ConversionFailed {
-                        format: "cann".into(),
-                        reason: format!(
-                            "CANN Slice does not support strides != 1 (output {})",
-                            outputs[0]
-                        ),
-                    });
-                }
                 let x_name = CString::new("x").unwrap();
                 let status =
                     unsafe { set_src_input(compute_op, &x_name, *input, &handles, &split_out) };
@@ -3154,10 +5196,20 @@ mod adapter {
                         ),
                     });
                 }
-                let perm_vals: Vec<i32> = options
+                // WebNN transposes with the reversed order when no
+                // permutation is given.
+                let mut perm_vals: Vec<i32> = options
                     .as_ref()
                     .map(|o| o.permutation.iter().map(|&p| p as i32).collect())
                     .unwrap_or_default();
+                if perm_vals.is_empty() {
+                    // A 0-D input reaches the kernel as `[1]`, so its identity
+                    // permutation is `[0]` like a rank-1 tensor.
+                    let rank = descriptor_dims(&graph.operands[*input as usize].descriptor)
+                        .len()
+                        .max(1);
+                    perm_vals = (0..rank as i32).rev().collect();
+                }
                 let perm_const = make_const(
                     &format!("transpose_perm_{}", outputs[0]),
                     bytemuck::cast_slice(&perm_vals),
@@ -3282,13 +5334,14 @@ mod adapter {
                 input,
                 axis,
                 options,
-                outputs,
                 ..
             } = op
             {
                 connect_src_input(compute_op, "x", *input, &handles, &split_out)?;
+                // The DDK `Cumsum` declares `axis` as an input tensor, not an
+                // attribute.
                 let axis_const = make_const(
-                    &format!("cumsum_axis_{}", outputs[0]),
+                    &format!("cumsum_axis_{}", op_outputs(op)[0]),
                     bytemuck::cast_slice(&[*axis as i32]),
                     &[1],
                     ddk_CannDataType::CANN_DT_INT32,
@@ -3296,10 +5349,12 @@ mod adapter {
                 );
                 guard.extra_ops.push(axis_const);
                 connect_input(compute_op, "axis", axis_const)?;
-                if let Some(o) = options.as_ref() {
-                    set_bool_attr(compute_op, "exclusive", o.exclusive);
-                    set_bool_attr(compute_op, "reverse", o.reversed);
-                }
+                let (exclusive, reverse) = options
+                    .as_ref()
+                    .map(|o| (o.exclusive, o.reversed))
+                    .unwrap_or((false, false));
+                set_bool_attr(compute_op, "exclusive", exclusive);
+                set_bool_attr(compute_op, "reverse", reverse);
             }
 
             // Wire Gather via hiai::op::GatherV2D (x + indices + axis).
@@ -3335,29 +5390,25 @@ mod adapter {
                 connect_src_input(compute_op, "updates", *updates, &handles, &split_out)?;
             }
 
-            // Wire Where via hiai::op::Select (condition, x1, x2).
-            if let Operation::Where {
-                condition,
-                true_value,
-                false_value,
-                ..
-            } = op
+            // Comparisons and logical ops produce BOOL in the DDK, while WebNN
+            // declares their result uint8; cast so the graph output type matches.
+            let mut result_op = compute_op;
+            if is_bool_producing(op)
+                && let Some(&out_id) = op_outputs(op).first()
             {
-                connect_src_input(compute_op, "condition", *condition, &handles, &split_out)?;
-                connect_src_input(compute_op, "x1", *true_value, &handles, &split_out)?;
-                connect_src_input(compute_op, "x2", *false_value, &handles, &split_out)?;
+                result_op = emit_bool_output_cast(compute_op, out_id, graph, &mut guard.extra_ops)?;
             }
 
             let outputs: &[u32] = op_outputs(op);
             let out_handle = if nhwc_out {
                 emit_transpose(
                     &format!("nhwc_out_{}", outputs[0]),
-                    compute_op,
+                    result_op,
                     &[0, 2, 3, 1],
                     &mut guard.extra_ops,
                 )?
             } else {
-                compute_op
+                result_op
             };
             for &out_id in outputs.iter() {
                 handles[out_id as usize] = out_handle;

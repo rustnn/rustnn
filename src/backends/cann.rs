@@ -41,6 +41,28 @@ pub(crate) struct CannTensor {
     memory: Vec<u8>,
 }
 
+// The DDK has no rank-0 tensors. A WebNN 0-D value is one element, so describe
+// it as `[1]`: the byte count is identical and the value is unchanged. A rank-5
+// graph folded by the converter is described with the same merged dimensions
+// here, so the model's declared shapes match.
+fn ddk_shape(shape: &[u64], fold_rank5: bool) -> Vec<u32> {
+    let dims: Vec<u64> = if fold_rank5 && shape.len() == 5 {
+        vec![
+            shape[0].saturating_mul(shape[1]),
+            shape[2],
+            shape[3],
+            shape[4],
+        ]
+    } else {
+        shape.to_vec()
+    };
+    if dims.is_empty() {
+        vec![1]
+    } else {
+        dims.iter().map(|dim| *dim as u32).collect()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CannGraph {
     // The compiled model, loaded onto the NPU at `build()` time; `dispatch()`
@@ -50,6 +72,9 @@ pub(crate) struct CannGraph {
     // positionally; MLNamedTensors sorts by name).
     pub(crate) input_names: Vec<String>,
     pub(crate) output_names: Vec<String>,
+    // Whether the converter folded the leading two dimensions of a rank-5
+    // elementwise graph, in which case dispatch folds the device shapes too.
+    pub(crate) fold_rank5: bool,
 }
 
 #[derive(Debug)]
@@ -242,7 +267,7 @@ impl<'context> MLBackendContext<'context> for CannContext {
                 let logical = t.rustnn_required_bytes();
                 CannInput {
                     data: &self.tensors[t.id].memory[..logical],
-                    shape: t.shape().iter().map(|dim| *dim as u32).collect(),
+                    shape: ddk_shape(t.shape(), cann_graph.fold_rank5),
                     dtype: t.data_type(),
                 }
             })
@@ -255,7 +280,7 @@ impl<'context> MLBackendContext<'context> for CannContext {
             .zip(output_buffers.iter_mut())
             .map(|(t, buf)| CannOutput {
                 data: buf.as_mut_slice(),
-                shape: t.shape().iter().map(|dim| *dim as u32).collect(),
+                shape: ddk_shape(t.shape(), cann_graph.fold_rank5),
                 dtype: t.data_type(),
                 actual_len: 0,
             })
@@ -365,6 +390,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
             session,
             input_names,
             output_names,
+            fold_rank5: graph_info.can_fold_rank5(),
         };
         MLGraph::new(CannEngine(graph), &graph_info)
     }
@@ -406,6 +432,17 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn ddk_shape_promotes_rank0_and_folds_rank5() {
+        assert_eq!(super::ddk_shape(&[], true), vec![1]);
+        assert_eq!(super::ddk_shape(&[2, 3, 4, 5], true), vec![2, 3, 4, 5]);
+        assert_eq!(
+            super::ddk_shape(&[2, 3, 4, 5, 6], false),
+            vec![2, 3, 4, 5, 6]
+        );
+        assert_eq!(super::ddk_shape(&[2, 3, 4, 5, 6], true), vec![6, 4, 5, 6]);
     }
 
     #[test]
