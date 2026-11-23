@@ -105,6 +105,7 @@
 //! | `dynamic-inputs` | Enable ONNX/CoreML conversion of [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
 //! | `zstd-cache-compression` | Compress on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
+//! | `url-weights-http` | `http://` and `https://` sources for URL constants ([`weights`]); `file://` and paths need no feature |
 //! | `capi` | C API exports and logging support |
 //! | `wpt-embed-corpus` | Embed the WPT corpus for targets without filesystem access |
 //! | `webnn-wpt-tests` | Browser WPT tests, including the embedded corpus |
@@ -117,6 +118,11 @@
 //! | `RUSTNN_ONNX_DUMP_DIR` | When set, writes the converted ONNX model to `debug_webnn_onnx.onnx` in this directory |
 //! | `RUSTNN_TRTX_LOG_VERBOSITY` | TensorRT logger filter: `internal_error`, `error`, `warning`, `info` or `verbose` |
 //! | `TRTX_JSON_DUMP_PATH` | Directory for per-engine TensorRT layer dumps |
+//! | `RUSTNN_WEIGHTS_FETCH_THREADS` | Worker threads that fetch URL constants (default 4); see [`weights`] |
+//! | `RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES` | TensorRT-RTX: bound in bytes for fetched URL-constant data held in host memory before it is refitted into the engine; unset means twice `RUSTNN_WEIGHTS_BIND_BATCH_BYTES` when that is set, otherwise unbounded. The other backends fetch every URL constant into host memory and ignore it |
+//! | `RUSTNN_WEIGHTS_BIND_BATCH_BYTES` | TensorRT-RTX: refit and free fetched URL-constant data whenever this many bytes are held; default is half of the bound above, or one refit at the end |
+//! | `RUSTNN_TRTX_WEIGHTLESS_BUILD` | TensorRT-RTX, experiment only: `1` builds the network with null-weight constant layers for host-buffer constants too and refits them after the build; such an engine has an engine cache key of its own |
+//! | `RUSTNN_TEST_REQUIRE_BACKENDS` | `tests/url_weights.rs` only: when set, a backend that cannot start fails the test instead of skipping it |
 //! | `ORT_DYLIB_PATH` | Path of the ONNX Runtime shared library loaded by `ort` |
 //! | `WPT_COREML_TENSOR_MODE` | WPT harness only: `baseline` (default), `persistent`, or `backings`; does not change library defaults |
 //! | `WPT_COREML_FLOAT16` | WPT harness only: `native` (default) or `exact` CoreML float16 lowering; does not change library defaults |
@@ -159,6 +165,7 @@ pub mod shape_inference;
 pub mod tensor;
 pub mod webnn_json;
 pub(crate) mod webnn_save;
+pub mod weights;
 
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;

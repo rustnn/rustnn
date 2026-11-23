@@ -220,6 +220,20 @@ pub enum GraphBuilderError {
         provided_size: usize,
     },
 
+    /// The bytes of the URL constant `operand` could not be loaded from `url`: `reason`.
+    #[error("Could not resolve URL constant (operand {operand}) from {url:?}: {reason}")]
+    UnresolvedConstant {
+        operand: u32,
+        url: String,
+        reason: String,
+    },
+
+    /// `operation` is not available for a graph with URL constants, whose bytes are not in host memory.
+    #[error(
+        "{operation} is not available for a graph with URL constants: their bytes are not in host memory"
+    )]
+    UrlConstantsNotMaterialized { operation: &'static str },
+
     /// Build with invalid operand: operand `operand` assigned to name `name` is not part of this graph.
     #[error(
         "Build with invalid operand: operand {operand:?} assigned to name {name:?} is not part of this graph"

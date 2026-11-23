@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Deref;
 
 use crate::Operation;
@@ -5,6 +6,7 @@ use crate::error::GraphBuilderError;
 use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind};
 use crate::mlcontext::MLOperand;
 use crate::mlgraphbuilder::infer_operation_descriptors;
+use crate::weights::UrlRef;
 
 /// Owns an in-progress graph and records only fully inferred operations.
 ///
@@ -15,6 +17,9 @@ pub(crate) struct GraphRecorder {
     graph: GraphInfo,
     bypass_allowed_data_types_checks: bool,
     allow_int4_uint4: bool,
+    /// Constants whose bytes live at a URL. They are `Constant` operands of `graph` without an
+    /// entry in `constant_operand_ids_to_handles`.
+    url_constants: HashMap<u32, UrlRef>,
 }
 
 impl GraphRecorder {
@@ -73,6 +78,33 @@ impl GraphRecorder {
         });
         self.graph.constant_operand_ids_to_handles.insert(id, data);
         id
+    }
+
+    /// Appends a constant whose bytes are loaded from `source` when the graph is built.
+    pub(crate) fn add_url_constant(
+        &mut self,
+        name: Option<String>,
+        descriptor: OperandDescriptor,
+        source: UrlRef,
+    ) -> u32 {
+        let id = self.graph.operands.len() as u32;
+        self.graph.operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor,
+            name,
+        });
+        self.url_constants.insert(id, source);
+        id
+    }
+
+    /// True when the graph has at least one URL constant.
+    pub(crate) fn has_url_constants(&self) -> bool {
+        !self.url_constants.is_empty()
+    }
+
+    /// Removes and returns the URL constants; the caller becomes responsible for resolving them.
+    pub(crate) fn take_url_constants(&mut self) -> HashMap<u32, UrlRef> {
+        std::mem::take(&mut self.url_constants)
     }
 
     /// Infers output descriptors and then appends the operation atomically.

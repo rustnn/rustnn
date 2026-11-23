@@ -102,6 +102,21 @@ Rules that hold for every converter:
   or feeding only casts and certain data types) are excluded from refit (`unused_constant_operand_ids`,
   `constant_only_feeds_casts`). Refit failures raise `TrtxError::ConstantRefitFailed` with the
   operand and its consumers.
+- A constant in the `deferred` set of `build_network_with_placeholders` is a placeholder: it is
+  added as a constant layer with null weights (`add_constant_placeholder`) under the same weight
+  name as an ordinary constant, and the backend refits it after the build. The backend passes
+  the URL constants, whose bytes are not in `GraphInfo`
+  (see [URL constants](https://rustnn.github.io/rustnn/integration/tensorrt/#url-constants-prototype)),
+  and with `RUSTNN_TRTX_WEIGHTLESS_BUILD=1` the refittable host-buffer constants as well. A
+  placeholder without a consumer gets no layer.
+- The baked constants (`gather_baked_constant_operand_ids`) cannot be placeholders, because
+  their values are needed while the network is built: the lowering reads some of them and
+  TensorRT folds the others into the engine. The set is decided from the operand kind, data
+  type, element count and consumers, not from which bytes are present. One lowering outside
+  that set, `layerNormalization` with empty `axes` and a bias, emits different layers when the
+  bytes of the bias are absent, so a network built from URL placeholders can differ from the
+  one built from bytes. The backend therefore caches an engine built from placeholders under a
+  key of its own.
 - The engine cache key hashes the converter sources (`build.rs`, `SOURCE_HASH`), so converter
   edits invalidate cached engines. This source hash does not invalidate the separate TensorRT
   JIT runtime cache. See the [cache guide](https://rustnn.github.io/rustnn/integration/tensorrt/#caches).

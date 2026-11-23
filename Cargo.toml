@@ -71,6 +71,8 @@ trtx-enterprise = ["trtx-runtime", "trtx/enterprise"]
 zstd-cache-compression = ["dep:zstd"]
 
 native-examples = []
+# http:// and https:// sources for URL constants (`MLGraphBuilder::rustnn_constant_from_url`).
+url-weights-http = ["dep:ureq"]
 wpt-embed-corpus = []
 webnn-wpt-tests = ["wpt-embed-corpus"]
 webnn-runtime = [
@@ -250,6 +252,7 @@ pretty_env_logger = { version = "0.5.0", optional = true }
 seahash = "4.1.0"
 dirs = "7.0.0"
 zstd = { version = "0.14", optional = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 
 
 web-sys = { version = "0.3.104", features = [
@@ -319,6 +322,11 @@ required-features = ["native-examples"]
 name = "smollm_mlcontext"
 path = "examples/smollm_mlcontext.rs"
 required-features = ["native-examples"]
+
+[[example]]
+name = "url_weights_bench"
+path = "examples/url_weights_bench.rs"
+required-features = ["trtx-runtime"]
 
 [lib]
 name = "rustnn"

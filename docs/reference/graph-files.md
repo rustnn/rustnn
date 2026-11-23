@@ -22,6 +22,12 @@ let graph_info = rustnn::load_graph_from_path("model.webnn")?;
 let mut graph = context.rustnn_build_graph(graph_info)?;
 ```
 
+A builder with URL constants
+([rustnn_constant_from_url](https://rustnn.github.io/rustnn/api/rustnn/mlgraphbuilder/struct.MLGraphBuilder.html#method.rustnn_constant_from_url))
+cannot be saved: their bytes are not in host memory, and `rustnn_save_webnn` returns
+`GraphBuilderError::UrlConstantsNotMaterialized`. The loader does not create URL constants; it
+resolves every external constant into host memory.
+
 The loader selects the parser from the extension: `.webnn` text is parsed into `GraphJson`,
 while `.json` is deserialized directly into that same representation. Both then use the shared
 external-weight resolver and RustNN graph recorder, including shape inference and validation.
@@ -62,7 +68,8 @@ and [Dimension](https://rustnn.github.io/rustnn/api/rustnn/graph/enum.Dimension.
 ## Other exports
 
 For text without file output, use
-[rustnn_webnn_text_for_outputs](https://rustnn.github.io/rustnn/api/rustnn/mlgraphbuilder/struct.MLGraphBuilder.html#method.rustnn_webnn_text_for_outputs).
+[rustnn_webnn_text_for_outputs](https://rustnn.github.io/rustnn/api/rustnn/mlgraphbuilder/struct.MLGraphBuilder.html#method.rustnn_webnn_text_for_outputs);
+it returns `None` for a builder with URL constants.
 For backend formats, finish a `GraphInfo` and use
 [ConverterRegistry](https://rustnn.github.io/rustnn/api/rustnn/converters/struct.ConverterRegistry.html).
 Persist both the model and any weights returned in

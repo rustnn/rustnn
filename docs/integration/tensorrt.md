@@ -22,7 +22,7 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
   `cudarc`; the CUDA toolkit is not required. Device enumeration checks for the driver library
   before initializing CUDA. If the library is missing or initialization fails, it reports no
   TensorRT-RTX devices so automatic selection can try another backend.
-- The TensorRT-RTX 1.6 library. The `trtx` crate loads it by name (`tensorrt_rtx_1_6`), so the
+- The TensorRT-RTX 1.7 library. The `trtx` crate loads it by name (`tensorrt_rtx_1_7`), so the
   SDK's `lib` directory (Linux) or `bin` directory (Windows) must be on `LD_LIBRARY_PATH` or
   `PATH`, or the application calls `rustnn::backends::trtx::dynamically_load_tensorrt(Some(path))`
   before creating a context. When the library cannot be loaded, backend selection skips
@@ -52,11 +52,51 @@ devices found and `Backend selected: Trtx { cuda_device_idx: 0 }`.
    stability; `reduceLogSum` keeps its sum and logarithm in float32 before casting the result
    back to float16.
 3. The stripped engine is stored in the engine cache and then refitted with the actual weights.
-   Loading a cached engine skips the build entirely. Engines are cached only when every constant
-   is refittable, so weight data never ends up in the cache.
+   Loading a cached engine skips the build entirely. Engines are cached when every baked
+   constant is small. The bytes of the baked constants are part of the cache key; refittable
+   weights never end up in the cache.
 4. Tensors are CUDA device buffers. `dispatch` binds them by name, captures a CUDA graph per
    distinct binding set and replays it on later calls. `write_tensor` synchronizes the stream
    before it returns.
+
+## URL constants (prototype)
+
+`MLGraphBuilder::rustnn_constant_from_url` records a constant by the URL and byte range of its
+bytes instead of a host buffer (the pull model from the discussion in
+[webnn#901](https://github.com/webmachinelearning/webnn/issues/901)); the
+[`weights` module documentation](https://rustnn.github.io/rustnn/api/rustnn/weights/)
+owns the rules. On this backend `build` runs these steps:
+
+1. It skips the URL constants without a consumer, which are never fetched, and fetches the URL
+   constants that the converter bakes into the engine. Their values are needed for the engine
+   cache key and to build the network. This fetch runs one constant after another on the
+   calling thread.
+2. It starts worker threads (`UrlFetchOptions::threads`, `RUSTNN_WEIGHTS_FETCH_THREADS`) that
+   fetch the byte ranges of the remaining URL constants. `UrlFetchOptions::max_inflight_bytes`
+   (`RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES`), the byte bound, limits the fetched bytes that are
+   held in host memory and not yet refitted. It does not apply to the fetch of step 1.
+3. It loads the engine from the engine cache, or on a miss builds it from a network in which
+   the remaining constants are constant layers with null weights (placeholders). The fetch
+   runs meanwhile. An engine built from placeholders has its own cache key, and that key
+   contains no URL.
+4. It refits the engine from the fetched buffers: once at the end, or in batches that are
+   freed after each refit when `max_inflight_bytes` or `UrlFetchOptions::bind_batch_bytes`
+   (`RUSTNN_WEIGHTS_BIND_BATCH_BYTES`) is set.
+
+`build` returns after all weights are bound. Without a byte bound the whole fetch can overlap
+the engine build. With a bound the workers fetch up to the bound during the build and continue
+when the refit starts to free buffers. A failed fetch of a constant from step 2 is reported
+after the engine was built or loaded. In a graph with quantize or dequantize operations every
+constant is baked, so all of its URL constants are fetched in step 1. The byte bound is best
+effort while TensorRT reports missing weights for a batch: the backend then keeps the fetched
+buffers and logs a warning.
+
+Placeholders need TensorRT-RTX 1.7 or later.
+
+`examples/url_weights_bench.rs` compares host memory and the time to the first inference with
+constants passed as host buffers (see the
+[examples page](https://rustnn.github.io/rustnn/user-guide/examples/#url-constants-benchmark));
+`tests/url_weights.rs` holds the tests.
 
 ## Options
 
@@ -95,12 +135,17 @@ converter change because the converter source hash is part of the key.
 | `TRTX_JSON_DUMP_PATH` | Directory that receives a layer JSON dump per built engine |
 | `RUST_LOG` | rustnn logging; `debug` shows cache keys and refit details |
 
+The variables for URL constants (`RUSTNN_WEIGHTS_*` and the experiment switch
+`RUSTNN_TRTX_WEIGHTLESS_BUILD`) are listed in the
+[crate environment variable table](https://rustnn.github.io/rustnn/api/rustnn/#environment-variables).
+
 ## Testing
 
 ```bash
 make test-wpt-trtx                                        # WPT suite, requires a GPU
 WPT_BACKEND=trtx make test-wpt-op OP=conv2d               # one operation
 cargo test --test test_trtx_execution --features trtx-runtime
+cargo test --test url_weights --features trtx-runtime,url-weights-http -- --test-threads 1  # URL constants
 make wpt-sync-trtx                                        # regenerate PASS snapshots after converter changes
 cargo check -F trtx-runtime --all-targets                 # what CI runs
 ```

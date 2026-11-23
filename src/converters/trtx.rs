@@ -783,7 +783,7 @@ impl TrtxConverter {
                 | Operation::GatherElements { .. } => {
                     if op.input_operands().len() >= 2 {
                         let indices_id = op.input_operands()[1];
-                        if Self::is_graph_constant(graph, indices_id) {
+                        if Self::is_constant_operand(graph, indices_id) {
                             ids.insert(indices_id);
                         }
                     }
@@ -792,13 +792,13 @@ impl TrtxConverter {
                     let ins = op.input_operands();
                     if ins.len() >= 2 {
                         let scale_id = ins[1];
-                        if Self::is_graph_constant(graph, scale_id) {
+                        if Self::is_constant_operand(graph, scale_id) {
                             ids.insert(scale_id);
                         }
                     }
                     if ins.len() >= 3 {
                         let zp_id = ins[2];
-                        if Self::is_graph_constant(graph, zp_id) {
+                        if Self::is_constant_operand(graph, zp_id) {
                             ids.insert(zp_id);
                         }
                     }
@@ -806,19 +806,19 @@ impl TrtxConverter {
                 Operation::DequantizeLinear { .. } => {
                     let ins = op.input_operands();
                     if let Some(&in_id) = ins.first()
-                        && Self::is_graph_constant(graph, in_id)
+                        && Self::is_constant_operand(graph, in_id)
                     {
                         ids.insert(in_id);
                     }
                     if ins.len() >= 2 {
                         let scale_id = ins[1];
-                        if Self::is_graph_constant(graph, scale_id) {
+                        if Self::is_constant_operand(graph, scale_id) {
                             ids.insert(scale_id);
                         }
                     }
                     if ins.len() >= 3 {
                         let zp_id = ins[2];
-                        if Self::is_graph_constant(graph, zp_id) {
+                        if Self::is_constant_operand(graph, zp_id) {
                             ids.insert(zp_id);
                         }
                     }
@@ -869,11 +869,43 @@ impl TrtxConverter {
         Ok(ids)
     }
 
+    /// True when `operand_id` is a constant operand, whether or not its bytes are in the graph.
+    ///
+    /// Unlike [`Self::is_graph_constant`] this also holds for a URL constant that has not been
+    /// fetched, so the baked-constant classification does not depend on which bytes arrived.
+    fn is_constant_operand(graph: &GraphInfo, operand_id: u32) -> bool {
+        graph
+            .operand(operand_id)
+            .is_some_and(|operand| operand.kind == OperandKind::Constant)
+    }
+
     /// Build TensorRT network from WebNN graph.
     pub fn build_network<'a>(
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
+        Self::build_network_with_placeholders(graph, network, &HashSet::new())
+    }
+
+    /// Build the TensorRT network without the bytes of the `deferred` constants.
+    ///
+    /// A deferred constant becomes a constant layer with null weights (a placeholder), which
+    /// TensorRT accepts with `kSTRIP_PLAN` + `kREFIT_INDIVIDUAL` and which must be refitted
+    /// under the weight name [`Self::constant_weight_name`] before inference. It usually has no
+    /// entry in `graph.constant_operand_ids_to_handles` (a URL constant); the bytes of one that
+    /// has an entry are not used for its layer. A deferred constant without a consumer gets no
+    /// layer. The baked set of [`Self::gather_baked_constant_operand_ids`] cannot be deferred,
+    /// because those values are needed while the network is built.
+    pub(crate) fn build_network_with_placeholders<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        deferred: &HashSet<u32>,
+    ) -> Result<(), GraphError> {
+        let unused_deferred: HashSet<u32> = if deferred.is_empty() {
+            HashSet::new()
+        } else {
+            Self::unused_constant_operand_ids(graph)
+        };
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph)?;
         let io_binding_names = Self::engine_io_binding_names(graph);
@@ -924,6 +956,41 @@ impl TrtxConverter {
                     .iter()
                     .map(|d| get_static_or_max_size(d) as i32)
                     .collect();
+                if deferred.contains(&(operand_id as u32)) {
+                    if unused_deferred.contains(&(operand_id as u32)) {
+                        continue;
+                    }
+                    if non_refittable_constants.contains(&(operand_id as u32)) {
+                        return Err(GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!(
+                                "Constant operand {operand_id} is baked into the engine and cannot be a placeholder"
+                            ),
+                        });
+                    }
+                    let add_dims: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
+                    let layer = network
+                        .add_constant_placeholder(
+                            &add_dims,
+                            Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
+                            &Self::constant_weight_name(operand_id as u32),
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!(
+                                "Failed to add placeholder constant (operand {operand_id}): {e}"
+                            ),
+                        })?;
+                    let tensor =
+                        layer
+                            .output(&*network, 0)
+                            .map_err(|e| GraphError::ConversionFailed {
+                                format: "trtx".to_string(),
+                                reason: format!("Failed to get constant layer output: {e}"),
+                            })?;
+                    tensor_map.insert(operand_id as u32, tensor);
+                    continue;
+                }
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
                 // Validate that data size matches expected packed byte length

@@ -12,9 +12,11 @@ fast.
 | `smollm_mlcontext.rs` | Text generation with SmolLM-135M from an onnx2webnn export: loads `.webnn` plus weights, uses dynamic tensor shapes for the KV cache (`rustnn_set_tensor_capacity`, `rustnn_resize_tensor`) and a tokenizer | `cargo run --release --features native-examples,onnx-runtime,dynamic-inputs --example smollm_mlcontext -- --model model.webnn --tokenizer tokenizer.json --max-new-tokens 32` |
 | `resnet50_webnn_rust.rs` | ResNet-50 classification and a latency benchmark from a `.webnn` export, with ImageNet preprocessing of a JPEG or PNG input | `cargo run --release --features onnx-runtime --example resnet50_webnn_rust -- --model resnet50_Opset16.webnn --input cat.jpg --labels examples/imagenet_classes.txt --bench` |
 | `gpt2_webnn_rust.rs` | Older generation loops built on the legacy executor path (`ConverterRegistry` plus `run_onnx_with_inputs`) instead of `MLContext` |  |
+| `url_weights_bench.rs` | Host memory and time to the first inference on TensorRT-RTX for constants passed as host buffers against URL constants (`rustnn_constant_from_url`); see [URL constants benchmark](#url-constants-benchmark) | `cargo run --release --features trtx-runtime,url-weights-http --example url_weights_bench -- --mode url --source http --size-mib 512 --throttle-mib-s 100` |
 
 Replace `onnx-runtime` with `trtx-runtime` to run the same programs on TensorRT-RTX. All of
-them accept `--help`.
+them accept `--help`. `url_weights_bench` is the exception: it runs on TensorRT-RTX only and
+has no `--help`; its arguments are listed [below](#url-constants-benchmark).
 
 Where the models come from:
 
@@ -154,6 +156,36 @@ The hint fixes the backend; the device is still whatever that backend reports fo
 so `accelerated = true` on an ONNX Runtime build without a GPU execution provider prints `Cpu`.
 
 The selection order and the per-backend requirements are described in [Backends](https://rustnn.github.io/rustnn/api/rustnn/backend_selection/).
+
+### URL constants benchmark
+
+`examples/url_weights_bench.rs` measures the prototype of URL constants
+(`MLGraphBuilder::rustnn_constant_from_url`, see the
+[`weights` module](https://rustnn.github.io/rustnn/api/rustnn/weights/)) on
+TensorRT-RTX. It builds a stack of `matmul` layers whose weights live in one blob file, runs one
+inference and prints one JSON line: the time to the first inference, the peak of the Rust heap
+up to the end of `build`, and two process counters from the operating system. On Windows these
+are the peak working set and the peak commit charge, on Linux the peak resident set (`VmHWM`)
+and the peak virtual size (`VmPeak`). One process is one sample, so run it several times per
+configuration. The blob file is created on first use under `target/url_weights_bench/`.
+
+| Argument | Meaning |
+|---|---|
+| `--mode pointer-whole` | The application loads the whole resource and copies each tensor into `constant_from_bytes` |
+| `--mode pointer-range` | The application loads each tensor range into its own buffer, one after another, and moves it into `constant_from_bytes` |
+| `--mode url` | The default mode: the constants are created with `rustnn_constant_from_url` and the backend fetches them |
+| `--source file` or `http` | Read the blob from the local file (the default) or from a loopback HTTP range server that the example starts as a child process; `http` needs the `url-weights-http` feature in every mode |
+| `--blob <path>` | Use this blob file instead of the one under `target/url_weights_bench/`; it is created when it is missing or has another size |
+| `--throttle-mib-s <n>` | Limit the HTTP server to this rate over all connections; `0` (the default) is unlimited |
+| `--size-mib <n>`, `--layers <n>` | Total weight size and number of layers (defaults 256 and 4) |
+| `--cache on` or `off` | TensorRT engine cache (default off) |
+| `--runtime-cache on` or `off` | TensorRT runtime cache (default off, so that the Rust heap peak shows weight buffers only) |
+| `--budget-mib <n>`, `--batch-mib <n>`, `--threads <n>` | `url` mode: `UrlFetchOptions::max_inflight_bytes`, `bind_batch_bytes` and `threads` |
+| `--weightless-build on` | Pointer modes: sets `RUSTNN_TRTX_WEIGHTLESS_BUILD=1`, so that host-buffer constants are also built as constant layers with null weights (placeholders) and refitted after the build |
+
+The TensorRT-RTX libraries have to be loadable (see
+[TensorRT-RTX](../integration/tensorrt.md)). The output checksum (`checksum`) is equal across
+modes when the weights arrived intact.
 
 ### CoreML KV-cache benchmark
 

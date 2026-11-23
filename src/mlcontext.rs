@@ -130,6 +130,20 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
     /*async*/
     fn build(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>>;
+
+    /// Build a graph whose constants in `urls` have no bytes in `graph` yet.
+    ///
+    /// The default is the fallback for backends without late binding of weights: every URL
+    /// constant is fetched into host memory first. A backend that can compile without weights
+    /// overrides this and decides itself when the bytes are pulled.
+    fn build_with_url_constants(
+        &mut self,
+        mut graph: GraphInfo,
+        urls: crate::weights::UrlConstants,
+    ) -> Result<MLGraph<'context>> {
+        urls.materialize_into(&mut graph)?;
+        self.build(graph)
+    }
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
