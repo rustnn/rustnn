@@ -36,7 +36,7 @@ mod tests {
     use rustnn::operator_enums::MLOperandDataType;
     use rustnn::operator_options::{
         MLConv2dOptions, MLDimension, MLPool2dOptions, MLReduceOptions, MLResample2dOptions,
-        MLTransposeOptions,
+        MLSliceOptions, MLSplitOptions, MLTransposeOptions,
     };
 
     /// Single shared context, created lazily on first use and reused by every
@@ -531,6 +531,60 @@ mod tests {
     }
 
     #[test]
+    fn test_slice_with_strides() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 8]);
+        let input: MLOperand = builder.input("x", &desc).unwrap();
+        // `sizes` is the extent of the input window: four elements stepped by
+        // two keep indices 0 and 2, so the output has ceil(4 / 2) elements.
+        let options = MLSliceOptions {
+            strides: vec![1, 2],
+            ..Default::default()
+        };
+        let output: MLOperand = builder
+            .slice_with_options(
+                input,
+                &[0, 0],
+                &[MLDimension::Static(1), MLDimension::Static(4)],
+                options,
+            )
+            .unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 8])
+            .to_writable()
+            .to_readable();
+        let tdesc_out =
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_out = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(
+                &tensor_in,
+                &(1..=8).map(|value| value as f32).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("y", &tensor_out)]),
+            )
+            .unwrap();
+
+        let mut out_data = vec![0.0f32; 2];
+        context.read_tensor(&tensor_out, &mut out_data).unwrap();
+        println!(
+            "  Slice([1..8], sizes=[1,4], strides=[1,2]) = {:?}",
+            out_data
+        );
+        assert_eq!(out_data, [1.0f32, 3.0]);
+    }
+
+    #[test]
     fn test_softmax() {
         let mut context = CONTEXT.lock().unwrap();
 
@@ -853,6 +907,231 @@ mod tests {
         println!("  Split->Add: o0 = {:?}, o1 = {:?}", out0, out1);
         assert_eq!(out0, [11.0f32, 12.0]);
         assert_eq!(out1, [103.0f32, 104.0]);
+    }
+
+    #[test]
+    fn test_split_outputs_as_graph_outputs() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
+        let input: MLOperand = builder.input("x", &desc).unwrap();
+        let splits: Vec<MLOperand> = builder.split(input, &[2, 2]).unwrap();
+        // Both split slots are graph outputs, so the NetOutput binds slot 0
+        // and slot 1 directly.
+        let mut graph = builder
+            .build(&BTreeMap::from([("a", splits[0]), ("b", splits[1])]))
+            .unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
+            .to_writable()
+            .to_readable();
+        let tdesc_out = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_a = context.create_tensor(&tdesc_out).unwrap();
+        let tensor_b = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(&tensor_in, &vec![1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("a", &tensor_a), ("b", &tensor_b)]),
+            )
+            .unwrap();
+
+        let mut out_a = vec![0.0f32; 2];
+        let mut out_b = vec![0.0f32; 2];
+        context.read_tensor(&tensor_a, &mut out_a).unwrap();
+        context.read_tensor(&tensor_b, &mut out_b).unwrap();
+        println!("  Split outputs: a = {:?}, b = {:?}", out_a, out_b);
+        assert_eq!(out_a, [1.0f32, 2.0]);
+        assert_eq!(out_b, [3.0f32, 4.0]);
+    }
+
+    #[test]
+    fn test_split_cast_second_output() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc_4 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
+        let input: MLOperand = builder.input("x", &desc_4).unwrap();
+        let splits: Vec<MLOperand> = builder.split(input, &[2, 2]).unwrap();
+        // The cast into int32 changes the values, so a cast bound to the
+        // first split slot instead of the second would not go unnoticed.
+        let cast: MLOperand = builder.cast(splits[1], MLOperandDataType::Int32).unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("y", cast)])).unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
+            .to_writable()
+            .to_readable();
+        let tdesc_out = MLTensorDescriptor::new(MLOperandDataType::Int32, vec![2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_out = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(&tensor_in, &vec![1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("y", &tensor_out)]),
+            )
+            .unwrap();
+
+        let mut out_data = vec![0i32; 2];
+        context.read_tensor(&tensor_out, &mut out_data).unwrap();
+        println!("  Split[1]->Cast(int32): y = {:?}", out_data);
+        assert_eq!(out_data, [3i32, 4]);
+    }
+
+    #[test]
+    fn test_split_cast_then_relu_second_output() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
+        let input: MLOperand = builder.input("x", &desc).unwrap();
+        let splits: Vec<MLOperand> = builder.split(input, &[2, 2]).unwrap();
+        // The cast has one output, so the relu must read the cast itself, not
+        // a split slot copied from the cast's input.
+        let cast: MLOperand = builder.cast(splits[1], MLOperandDataType::Float16).unwrap();
+        let output: MLOperand = builder.relu(cast).unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
+            .to_writable()
+            .to_readable();
+        let tdesc_out = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_out = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(&tensor_in, &vec![-1.0f32, -2.0, 3.0, 4.0])
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("y", &tensor_out)]),
+            )
+            .unwrap();
+
+        let mut out_data = vec![half::f16::ZERO; 2];
+        context.read_tensor(&tensor_out, &mut out_data).unwrap();
+        let values: Vec<f32> = out_data.iter().map(|v| v.to_f32()).collect();
+        println!("  Split[1]->Cast(f16)->ReLU: y = {:?}", values);
+        assert_eq!(values, [3.0f32, 4.0]);
+    }
+
+    #[test]
+    fn test_split_layer_norm_second_output() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 4]);
+        let input: MLOperand = builder.input("x", &desc).unwrap();
+        let splits: Vec<MLOperand> = builder
+            .split_with_options(
+                input,
+                &[2, 2],
+                MLSplitOptions {
+                    axis: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let output: MLOperand = builder.layer_normalization(splits[1]).unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 4])
+            .to_writable()
+            .to_readable();
+        let tdesc_out =
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_out = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(&tensor_in, &vec![1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("y", &tensor_out)]),
+            )
+            .unwrap();
+
+        // Slot 1 is [3, 4]: mean 3.5, standard deviation 0.5.
+        let mut out_data = vec![0.0f32; 2];
+        context.read_tensor(&tensor_out, &mut out_data).unwrap();
+        println!("  Split[1]->layerNormalization: y = {:?}", out_data);
+        let expected = [-1.0f32, 1.0];
+        assert!(
+            out_data
+                .iter()
+                .zip(expected.iter())
+                .all(|(got, want)| (got - want).abs() < 2e-2),
+            "layerNorm precision: got {out_data:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_split_instance_norm_second_output() {
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 2, 2, 2]);
+        let input: MLOperand = builder.input("x", &desc).unwrap();
+        let splits: Vec<MLOperand> = builder
+            .split_with_options(
+                input,
+                &[1, 1],
+                MLSplitOptions {
+                    axis: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let output: MLOperand = builder.instance_normalization(splits[1]).unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+        let tdesc_in = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 2, 2, 2])
+            .to_writable()
+            .to_readable();
+        let tdesc_out =
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 2, 2]).to_readable();
+        let tensor_in = context.create_tensor(&tdesc_in).unwrap();
+        let tensor_out = context.create_tensor(&tdesc_out).unwrap();
+
+        context
+            .write_tensor(&tensor_in, &vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &BTreeMap::from([("x", &tensor_in)]),
+                &BTreeMap::from([("y", &tensor_out)]),
+            )
+            .unwrap();
+
+        // Slot 1 is the second channel [5, 6, 7, 8]: mean 6.5, variance 1.25.
+        let mut out_data = vec![0.0f32; 4];
+        context.read_tensor(&tensor_out, &mut out_data).unwrap();
+        println!("  Split[1]->instanceNormalization: y = {:?}", out_data);
+        let scale = 1.25f32.sqrt();
+        let expected = [-1.5 / scale, -0.5 / scale, 0.5 / scale, 1.5 / scale];
+        assert!(
+            out_data
+                .iter()
+                .zip(expected.iter())
+                .all(|(got, want)| (got - want).abs() < 2e-2),
+            "instanceNorm precision: got {out_data:?}, expected {expected:?}"
+        );
     }
 
     #[test]

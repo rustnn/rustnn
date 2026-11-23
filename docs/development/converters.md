@@ -263,7 +263,8 @@ Rules that hold for every converter:
 
 ### CANN
 
-- `is_supported_op` is the allow-list; everything else fails at build with an explicit error.
+- Support is defined by the dedicated lowering blocks plus the `webnn_op_to_hiai` kernel
+  map; everything else fails at build with an explicit error.
 
 ## Operator support report
 
@@ -271,8 +272,8 @@ Rules that hold for every converter:
 [operator support matrix](https://rustnn.github.io/rustnn/development/backend-operator-support/) from the sources: an operation counts as
 supported when the ONNX or LiteRT converter references its `Operation::<Variant>`, when the
 CoreML converter references the variant or compares against its lower-cased name, when the
-TensorRT converter has the name as a `match op_type` key, or when CANN lists the variant in
-`is_supported_op`. CI fails on drift; run `make docs-backend-ops` after every converter change.
+TensorRT converter has the name as a `match op_type` key. CI fails on drift; run
+`make docs-backend-ops` after every converter change.
 If you add a new dispatch style, extend the detection rule and its tests in the script.
 
 ## Tests
