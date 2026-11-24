@@ -18,6 +18,7 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 - The ONNX converter, `protos::onnx` and the `webnn-onnx-utils` dependency are behind a new default `onnx` feature (implied by `onnx-runtime`); `webnn-graph` is used without its `onnx` feature. Builds with `default-features = false` and a non-ONNX backend no longer compile the ONNX schema.
 
 ### Fixed
+- LiteRT: bounded dynamic dimensions are serialized at their maximum sizes (the graph is static and has no resize path), zero paddings no longer emit a no-op `PAD`, and rank-changing reshapes and relaid softmax outputs keep the declared channel order instead of flattening NHWC data as NCHW.
 - CoreML: `reciprocal` keeps the sign of -0, `log` no longer adds an epsilon, `roundEven` rounds ties to even on GPU and Neural Engine requests, float32 `tanh`, `sign` and `neg` keep NaN and zero signs, and `layerNormalization` applies scale and bias in the declared order on nontrailing or permuted axes (#279).
 - CoreML: `convTranspose2d` and zero-epsilon `instanceNormalization` compile from a URL, where Core ML matches WebNN for the reproduced cases (#279).
 - CoreML: NHWC `instanceNormalization` with runtime or computed scale and bias normalizes over the spatial axes instead of the last two, and a following NHWC `conv2d` reads its transposed output (#279).

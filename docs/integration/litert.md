@@ -30,7 +30,9 @@ delegate does not support.
 1. Operands that carry NCHW semantics (convolution, pooling, normalization inputs and filters)
    are transposed to NHWC in the flatbuffer; `is_spatial_op` and the `transpose_*_to_ohwi`
    helpers in `src/backends/litert.rs` define the mapping, and the backend transposes filter
-   data and boundary tensors at run time.
+   data and boundary tensors at run time. Rank-changing reshapes of relaid operands, and
+   softmax outputs the rewrite relaid, are bracketed by a single `TRANSPOSE` so the flatten
+   order and the declared layout stay consistent.
 2. Comparison and logical results are produced as TFLite `BOOL` tensors and converted to
    `uint8` at the graph boundary.
 3. `MLGraphBuilder::build` creates the compiled model once; `dispatch` copies tensors into
@@ -50,6 +52,9 @@ LiteRT model loader has no tensor type for it, so such a graph fails to compile 
 "Element type not currently supported". And `convTranspose2d` with dilations other than 1 is
 rejected by the converter, because `TRANSPOSE_CONV` carries no dilation factors and the
 option would otherwise be dropped silently.
+
+Bounded dynamic dimensions execute at their `max_size`: the flatbuffer is serialized as a
+static model, and the backend has no tensor-resize path.
 
 ## Testing
 

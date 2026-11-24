@@ -256,6 +256,13 @@ Rules that hold for every converter:
 
 - Spatial operations are NHWC. `is_spatial_op` marks operands whose layout changes; filters are
   transposed to OHWI and boundary tensors are transposed by the backend at run time.
+- Bounded dynamic dimensions are emitted at their `max_size`; the flatbuffer is static because
+  the backend has no tensor-resize path (`rustnn_resize_tensor` is unimplemented).
+- A zero padding emits no `PAD` node.
+- A rank-changing reshape of a relaid operand restores the WebNN order with one `TRANSPOSE`
+  (NHWC to NCHW before the flatten), and a softmax whose output the rewrite relaid is written
+  into its declared layout by a single transpose. A reshape whose input is already a graph
+  transpose's output is left alone: the rewrite folds the relayout into that transpose.
 - The converter rejects unsupported operation/data-type combinations; the runtime can impose
   further kernel restrictions. See the shared
   [LiteRT guide](https://rustnn.github.io/rustnn/integration/litert/) and generated support report
