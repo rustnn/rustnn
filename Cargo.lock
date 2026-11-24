@@ -5159,9 +5159,9 @@ dependencies = [
 
 [[package]]
 name = "trtx"
-version = "0.9.1+rtx1.7"
+version = "0.10.0+rtx1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "345f47d356314a6de8d5b9f7c4b37ac2d1a72a460a93344c56778a73c9b52eaf"
+checksum = "749b3807b3388f0b87b76364aa71cec489d86b4879dadab581499e522fdd7df9"
 dependencies = [
  "autocxx",
  "cxx",
@@ -5173,9 +5173,9 @@ dependencies = [
 
 [[package]]
 name = "trtx-sys"
-version = "0.9.1+rtx1.7"
+version = "0.10.0+rtx1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5480ee056292951daa1bc74532162d6cb75190f091e45d7d97c0c356916ae171"
+checksum = "1b7731485ebe69f81b807fb0da632d708f4c2613fc0f17538517c3395ebc6ef3"
 dependencies = [
  "autocxx",
  "autocxx-build",
