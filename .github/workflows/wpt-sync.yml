@@ -66,6 +66,10 @@ jobs:
         run: make wpt-sync-litert
 
       - name: Sync ONNX expected failures
+        # Outage switch (.github/onnxruntime-unavailable): without the library the run still
+        # completes on Burn CPU alone, and the sync would then rewrite
+        # onnx_expected_failures.txt with no entries.
+        if: hashFiles('.github/onnxruntime-unavailable') == ''
         run: make wpt-sync-onnx
 
       - name: Record pass totals

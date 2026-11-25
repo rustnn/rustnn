@@ -86,11 +86,27 @@ impl CannSession {
                     reason: format!("session load failed: {e}"),
                 })?;
 
+            let fold_rank5 = graph.can_fold_rank5();
             let static_slots = |ids: &[u32]| -> Option<Vec<(Vec<u32>, i32)>> {
                 ids.iter()
                     .map(|&id| {
                         let desc = &graph.operands[id as usize].descriptor;
-                        let shape = desc.static_shape()?;
+                        let mut shape = desc.static_shape()?;
+                        if fold_rank5 && shape.len() == 5 {
+                            // The converter folded the leading dimensions of a
+                            // rank-5 elementwise graph.
+                            shape = vec![
+                                shape[0].saturating_mul(shape[1]),
+                                shape[2],
+                                shape[3],
+                                shape[4],
+                            ];
+                        }
+                        if shape.is_empty() {
+                            // The DDK has no rank-0 tensors: WebNN 0-D is one
+                            // element, described as `[1]`.
+                            shape.push(1);
+                        }
                         let dtype = ml_operand_to_cann_dtype(desc.data_type);
                         Some((shape, dtype))
                     })
