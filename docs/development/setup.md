@@ -141,7 +141,7 @@ Then:
 5. `src/webnn_json.rs`: import and export mapping for the text and JSON formats.
 6. Converters: `src/converters/onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs`, `litert.rs`, `cann.rs`.
    A backend that cannot support the operation must reject it explicitly (LiteRT:
-   `unsupported_ops`; CANN: `is_supported_op`).
+   `unsupported_ops`; CANN: `webnn_op_to_hiai` or a dedicated lowering block).
 7. WPT: `make test-wpt-op OP=<name>` on every backend you can run, then `make wpt-sync-<backend>`.
 8. `make docs-backend-ops`, and document the builder method and its option fields in source.
 

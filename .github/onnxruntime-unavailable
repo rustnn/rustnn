@@ -1,0 +1,13 @@
+ONNX Runtime outage switch.
+
+While this file exists, CI skips the steps that execute ONNX Runtime:
+
+- wpt-conformance.yml: the ONNX job reports a warning and skips its conformance run.
+- wpt-sync.yml: the ONNX expected-failure sync is skipped.
+
+onnxruntime-availability.yml probes the ONNX Runtime download once a day and opens a pull
+request that deletes this file as soon as `make onnxruntime-download` works again. Deleting
+the file is all it takes to re-enable the steps; adding it back disables them again.
+
+Added on 2026-11-19: https://github.com/microsoft/onnxruntime and its release archives
+return 404, so `make onnxruntime-download` cannot fetch the library.
