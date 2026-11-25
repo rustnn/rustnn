@@ -110,6 +110,32 @@ selected with `RustNNOptions::coreml.float16_precision`:
 `docs/development/converters.md` lists the lowering rules for both. The WPT harness selects the
 lowering with `WPT_COREML_FLOAT16=native|exact` and the device with `WPT_COREML_DEVICE`.
 
+## Quantized constant weights
+
+A graph can author a weight matrix as an explicit dequantization of constants: an `int8` or
+`uint8` constant `[n, k]`, `cast` to `float16` or `float32`, an optional `sub` of a scalar zero
+point, `reshape` to blocks `[n, g, k / g]`, `mul` by a constant scale `[n, g, 1]` and `reshape`
+back to `[n, k]`. The converter keeps such a weight quantized. The weights blob holds the
+original bytes, one scale per block and, for a nonzero zero point, one offset per block, and
+the model declares a `constexpr_blockwise_shift_scale` constant that CoreML decompresses
+itself. Nothing has to be enabled, and a graph without such a chain converts as before. [Converter internals](https://rustnn.github.io/rustnn/development/converters/#coreml)
+lists what is recognized.
+
+- The constant holds the values of the chain: `(q - zero) * scale`, rounded once in its
+  float type, bit for bit.
+- What a `matmul` or `gemm` computes from the constant can differ from the literal lowering
+  in float16 rounding, because CoreML uses another kernel for a constant weight than for a
+  weight computed at run time. Under the `Native` float16 lowering the result is what a plain
+  float16 weight of those values gives on that load route.
+- `matmul(x, transpose(W))` reads the constant with `transpose_y`, without a `transpose`
+  operation. A table that a `gather` and such an output projection share is stored once.
+- What it saves depends on the load route. Through the URL compiler, CoreML used to evaluate
+  the chain into a float copy of every weight at compile time; that work and its memory peak
+  are gone. On the in-memory route the chain used to be evaluated on every dispatch; now the
+  load decompresses the constant once, so the build takes longer and each dispatch is
+  faster.
+- With `float16_precision = Exact`, a graph with float16 operands keeps the literal chain.
+
 ## Compiled-bundle cache
 
 `MLModel.compileModel` is the slow step of a build on small devices: tens of seconds for a
