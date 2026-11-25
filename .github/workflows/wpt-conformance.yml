@@ -85,8 +85,15 @@ jobs:
       - name: Fetch WPT corpus
         run: node scripts/fetch_wpt.mjs
 
+      # Outage switch: while .github/onnxruntime-unavailable exists the ONNX Runtime library
+      # cannot be downloaded, so the ONNX job skips its run instead of failing every pull
+      # request. onnxruntime-availability.yml opens the pull request that removes the file.
+      - name: Report skipped ONNX conformance run
+        if: matrix.backend.id == 'onnx' && hashFiles('.github/onnxruntime-unavailable') != ''
+        run: echo "::warning title=ONNX conformance skipped::.github/onnxruntime-unavailable is present, so the ONNX Runtime WPT run did not execute."
+
       - name: Run WPT conformance tests
-        if: matrix.backend.id != 'burn-cpu'
+        if: matrix.backend.id != 'burn-cpu' && (matrix.backend.id != 'onnx' || hashFiles('.github/onnxruntime-unavailable') == '')
         env:
           RUSTNN_GIT_SHA: ${{ github.sha }}
           RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}

@@ -313,6 +313,128 @@ impl GraphInfo {
         self.operands.get(id as usize)
     }
 
+    /// Whether the graph can run with its leading two dimensions folded into
+    /// one: every operation is shape-agnostic (elementwise) and folding does
+    /// not change broadcasting. The CANN kernels cap at rank 4.
+    #[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
+    pub(crate) fn can_fold_rank5(&self) -> bool {
+        let mut has_rank5 = false;
+        let mut leading: Vec<(u32, u32)> = Vec::new();
+        for operand in &self.operands {
+            match operand.descriptor.shape.len() {
+                5 => {
+                    has_rank5 = true;
+                    let (Dimension::Static(outer), Dimension::Static(inner)) =
+                        (&operand.descriptor.shape[0], &operand.descriptor.shape[1])
+                    else {
+                        return false;
+                    };
+                    leading.push((*outer, *inner));
+                }
+                6.. => return false,
+                _ => {}
+            }
+        }
+        if !has_rank5 {
+            return false;
+        }
+        // Merging two dimensions that are both 1 only drops a leading one and
+        // leaves every broadcast in place. Merging real dimensions re-associates
+        // them, so the other operands must not broadcast against that axis: all
+        // rank-5 operands share the merged pair (an all-ones pair broadcasts
+        // with any), and a rank-4 operand, which right-aligns against the
+        // merged axis, must broadcast there.
+        if leading.iter().any(|(outer, _)| *outer > 1) {
+            let reference = leading.iter().find(|pair| **pair != (1, 1));
+            for pair in &leading {
+                if Some(pair) != reference && *pair != (1, 1) {
+                    return false;
+                }
+            }
+            if self.operands.iter().any(|operand| {
+                operand.descriptor.shape.len() == 4
+                    && !matches!(operand.descriptor.shape[0], Dimension::Static(1))
+            }) {
+                return false;
+            }
+        }
+        self.operations.iter().all(|op| {
+            use Operation::*;
+            matches!(
+                op,
+                Add { .. }
+                    | Sub { .. }
+                    | Mul { .. }
+                    | Div { .. }
+                    | Pow { .. }
+                    | Max { .. }
+                    | Min { .. }
+                    | Equal { .. }
+                    | NotEqual { .. }
+                    | Greater { .. }
+                    | GreaterOrEqual { .. }
+                    | Lesser { .. }
+                    | LesserOrEqual { .. }
+                    | LogicalAnd { .. }
+                    | LogicalOr { .. }
+                    | LogicalXor { .. }
+                    | LogicalNot { .. }
+                    | Abs { .. }
+                    | Neg { .. }
+                    | Exp { .. }
+                    | Log { .. }
+                    | Sin { .. }
+                    | Cos { .. }
+                    | Tan { .. }
+                    | Sqrt { .. }
+                    | Ceil { .. }
+                    | Floor { .. }
+                    | Sign { .. }
+                    | Erf { .. }
+                    | Reciprocal { .. }
+                    | RoundEven { .. }
+                    | Relu { .. }
+                    | Sigmoid { .. }
+                    | Tanh { .. }
+                    | Elu { .. }
+                    | Gelu { .. }
+                    | LeakyRelu { .. }
+                    | HardSigmoid { .. }
+                    | HardSwish { .. }
+                    | Softplus { .. }
+                    | Softsign { .. }
+                    | Identity { .. }
+                    | Clamp { .. }
+                    | Linear { .. }
+                    | Cast { .. }
+                    | IsNaN { .. }
+                    | IsInfinite { .. }
+                    | Where { .. }
+            )
+        })
+    }
+
+    /// Fold the leading two dimensions of every rank-5 operand into one.
+    #[cfg(feature = "cann-converter")]
+    pub(crate) fn fold_rank5(&self) -> GraphInfo {
+        let mut folded = self.clone();
+        for operand in &mut folded.operands {
+            if operand.descriptor.shape.len() == 5
+                && let (Dimension::Static(outer), Dimension::Static(inner)) =
+                    (&operand.descriptor.shape[0], &operand.descriptor.shape[1])
+            {
+                let shape = operand.descriptor.shape.clone();
+                operand.descriptor.shape = vec![
+                    Dimension::Static(outer.saturating_mul(*inner)),
+                    shape[2].clone(),
+                    shape[3].clone(),
+                    shape[4].clone(),
+                ];
+            }
+        }
+        folded
+    }
+
     /// Whether any operand has a dynamic dimension.
     pub fn has_dynamic_dimensions(&self) -> bool {
         self.operands
@@ -779,5 +901,108 @@ mod tests {
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
         );
+    }
+}
+
+#[cfg(all(test, any(feature = "cann-converter", feature = "cann-runtime-mock")))]
+mod fold_rank5_tests {
+    use super::*;
+    use crate::operators::Operation;
+
+    fn operand(kind: OperandKind, shape: Vec<Dimension>) -> Operand {
+        Operand {
+            kind,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape,
+                pending_permutation: Vec::new(),
+            },
+            name: None,
+        }
+    }
+
+    fn static_shape(dims: &[u32]) -> Vec<Dimension> {
+        dims.iter().map(|&dim| Dimension::Static(dim)).collect()
+    }
+
+    // One add of operand 0 and 1 into operand 2.
+    fn add_graph(shapes: &[&[u32]]) -> GraphInfo {
+        let operands = shapes
+            .iter()
+            .enumerate()
+            .map(|(index, dims)| {
+                let kind = if index == 2 {
+                    OperandKind::Output
+                } else {
+                    OperandKind::Input
+                };
+                operand(kind, static_shape(dims))
+            })
+            .collect();
+        GraphInfo {
+            operands,
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
+            }],
+            constant_operand_ids_to_handles: std::collections::HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn folds_equal_leading_pairs() {
+        assert!(
+            add_graph(&[&[2, 3, 1, 2, 3], &[2, 3, 1, 2, 3], &[2, 3, 1, 2, 3]]).can_fold_rank5()
+        );
+    }
+
+    #[test]
+    fn folds_an_all_ones_leading_pair_next_to_a_merged_pair() {
+        assert!(
+            add_graph(&[&[1, 1, 2, 3, 4], &[4, 4, 2, 3, 4], &[4, 4, 2, 3, 4]]).can_fold_rank5()
+        );
+    }
+
+    #[test]
+    fn rejects_a_rank4_operand_broadcasting_on_the_merged_axis() {
+        // [3, 2, 3, 4] matches the output's dims 1..=4, but would align against
+        // the merged leading axis after folding.
+        assert!(!add_graph(&[&[2, 3, 2, 3, 4], &[3, 2, 3, 4], &[2, 3, 2, 3, 4]]).can_fold_rank5());
+    }
+
+    #[test]
+    fn folds_a_rank4_operand_whose_leading_dimension_broadcasts() {
+        assert!(add_graph(&[&[2, 3, 2, 3, 4], &[1, 2, 3, 4], &[2, 3, 2, 3, 4]]).can_fold_rank5());
+    }
+
+    #[test]
+    fn rejects_a_dynamic_leading_dimension() {
+        let mut graph = add_graph(&[&[2, 3, 2, 3, 4], &[2, 3, 2, 3, 4], &[2, 3, 2, 3, 4]]);
+        graph.operands[0].descriptor.shape[0] = Dimension::Dynamic(DynamicDimension {
+            name: "batch".to_string(),
+            max_size: 8,
+        });
+        assert!(!graph.can_fold_rank5());
+    }
+
+    #[test]
+    fn rejects_graphs_without_a_rank5_operand() {
+        assert!(!add_graph(&[&[2, 3, 4, 5], &[2, 3, 4, 5], &[2, 3, 4, 5]]).can_fold_rank5());
+    }
+
+    #[test]
+    fn rejects_non_elementwise_operations() {
+        let mut graph = add_graph(&[&[2, 3, 2, 3, 4], &[2, 3, 2, 3, 4], &[2, 3, 2, 3, 4]]);
+        graph.operations = vec![Operation::Transpose {
+            input: 0,
+            options: None,
+            outputs: vec![2],
+        }];
+        assert!(!graph.can_fold_rank5());
     }
 }
