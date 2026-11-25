@@ -1,0 +1,133 @@
+name: ONNX Runtime Availability
+
+# Counterpart of the outage switch .github/onnxruntime-unavailable. While that file exists,
+# this workflow tries the ONNX Runtime download once a day. When the download works again it
+# runs the ONNX conformance suite and opens a pull request that deletes the file, which
+# re-enables the ONNX steps in wpt-conformance.yml and wpt-sync.yml.
+
+on:
+  schedule:
+    # Daily at 05:00 UTC.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: onnxruntime-availability
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe ONNX Runtime download
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # This job executes the downloaded library, so it only gets a read token.
+    permissions:
+      contents: read
+    outputs:
+      available: ${{ steps.download.outputs.available }}
+      wpt: ${{ steps.wpt.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check the outage switch
+        id: switch
+        run: |
+          if [ -f .github/onnxruntime-unavailable ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::.github/onnxruntime-unavailable is absent: the ONNX Runtime steps are enabled, nothing to probe."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download ONNX Runtime
+        id: download
+        if: steps.switch.outputs.active == 'true'
+        run: |
+          # The Make target prints success even when the archive is an error page, so decide
+          # on the extracted library instead of the exit status.
+          make onnxruntime-download || true
+          if ls target/onnxruntime/*/lib/libonnxruntime.so* >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::ONNX Runtime is still unavailable: make onnxruntime-download did not produce the library."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.download.outputs.available == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        if: steps.download.outputs.available == 'true'
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protobuf compiler
+        if: steps.download.outputs.available == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      # Same command as the ONNX job in wpt-conformance.yml. A pull request opened with the
+      # workflow token does not start CI by itself, so this run is the first evidence that
+      # the restored library works. A failure is reported in the pull request, not hidden.
+      - name: Run ONNX WPT conformance
+        id: wpt
+        if: steps.download.outputs.available == 'true'
+        continue-on-error: true
+        run: make test-wpt-report WPT_BACKEND=onnx
+
+  reenable:
+    name: Open the re-enable pull request
+    needs: probe
+    if: needs.probe.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove the outage switch
+        env:
+          WPT_OUTCOME: ${{ needs.probe.outputs.wpt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          rm .github/onnxruntime-unavailable
+          {
+            echo "\`make onnxruntime-download\` works again, so this removes the outage switch"
+            echo "\`.github/onnxruntime-unavailable\`. That re-enables the ONNX job in"
+            echo "\`wpt-conformance.yml\` and the ONNX expected-failure sync in \`wpt-sync.yml\`."
+            echo
+            echo "ONNX WPT conformance on \`main\` with the downloaded library: **${WPT_OUTCOME}** ([run](${RUN_URL}))."
+            echo
+            echo "Before merging:"
+            echo
+            echo "- CI does not start by itself on a pull request opened with the workflow token."
+            echo "  Use \"Update branch\", or close and reopen the pull request, to run it."
+            echo "- The download was unavailable because upstream took the repository offline."
+            echo "  Check upstream's statement on the restored release archives."
+          } > "$RUNNER_TEMP/pr-body.md"
+
+      - name: Create or update pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: ci/reenable-onnxruntime
+          commit-message: |
+            ci: re-enable the ONNX Runtime jobs
+
+            make onnxruntime-download works again. Remove the outage switch
+            .github/onnxruntime-unavailable so that the ONNX WPT conformance job and
+            the ONNX expected-failure sync run again.
+
+            ONNX WPT conformance with the downloaded library: ${{ needs.probe.outputs.wpt }}
+          title: "ci: re-enable the ONNX Runtime jobs"
+          body-path: ${{ runner.temp }}/pr-body.md
+          delete-branch: true
+          add-paths: |
+            .github/onnxruntime-unavailable

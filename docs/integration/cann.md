@@ -51,11 +51,18 @@ it prints `[OK]` and `[FAIL]` lines per step.
 
 ## Supported operations
 
-The converter accepts the operations listed by `is_supported_op` in `src/converters/cann.rs`
-and rejects everything else at build time. Graph building rejects `bfloat16` and
+The converter accepts the operations handled by the dedicated lowering blocks and the
+`webnn_op_to_hiai` kernel map in `src/converters/cann.rs`, and rejects everything else at
+build time. Graph building rejects `bfloat16` and
 `float8e4m3` operands, including constants and intermediate results, with both the real
 and mock runtime. The CANN column of the generated
-[operator support report](https://rustnn.github.io/rustnn/development/backend-operator-support/) is the current list.
+[operator support report](https://rustnn.github.io/rustnn/development/backend-operator-support/) is not filled in;
+the device state is recorded in `tests/wpt_conformance/cann_expected_failures.txt`.
+
+The kernels cap at rank 4: an elementwise graph with rank-5 operands is lowered with its
+leading two dimensions folded into one when that preserves its broadcasts, and the backend
+folds the device shapes to match.
+
 WPT conformance runs on the device as well: `make test-wpt-cann` cross-compiles the harness
 with the corpus embedded (`wpt-embed-corpus` feature), pushes it with the HiAI libraries over
 `hdc`, runs it single-threaded and retrieves the JSON report; `make wpt-sync-cann` regenerates
