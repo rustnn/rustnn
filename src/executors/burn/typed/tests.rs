@@ -665,7 +665,7 @@ fn quantization_uses_exact_large_zero_points_and_differences() {
         Operation::DequantizeLinear {
             input: 0,
             scale: 2,
-            zero_point: Some(1),
+            zero_point: 1,
             options: None,
             outputs: vec![3],
         },
@@ -684,7 +684,7 @@ fn quantization_uses_exact_large_zero_points_and_differences() {
         Operation::QuantizeLinear {
             input: 3,
             scale: 2,
-            zero_point: Some(1),
+            zero_point: 1,
             options: None,
             outputs: vec![4],
         },

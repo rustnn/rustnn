@@ -32,7 +32,8 @@
 //! keeps a float copy of every weight. This prepass, which runs after
 //! [`super::coreml_constant_fold`] on the same copy of the [`GraphInfo`], replaces each
 //! such chain by one `dequantizeLinear(q, scale [n', g'], zeroPoint [n', g'])` over
-//! constants and tells the lowering, through [`BlockwiseConstants`], to emit it as MIL
+//! constants, including an explicit zero offset when the chain has no subtraction,
+//! and tells the lowering, through [`BlockwiseConstants`], to emit it as MIL
 //! `constexpr_blockwise_shift_scale` (iOS 18 operation set). The stored bytes stay int8 or
 //! uint8 in the weights blob and CoreML decompresses them itself. An authored
 //! `dequantizeLinear` is not affected: only the operations synthesized here are marked.
@@ -77,8 +78,8 @@
 //! the same exact integer and the product is the same real number rounded once. An
 //! implementation that forms the product in a wider float first also rounds once: an 8-bit
 //! integer times a float16 (11-bit significand) is exact in float32, and times a float32
-//! (24-bit significand) is exact in float64. The offset is omitted when `z` is zero, where
-//! `q - 0` is `q`. `tests/test_coreml_blockwise_constants.rs` evaluates both lowerings on
+//! (24-bit significand) is exact in float64. When `z` is absent or zero, the synthesized
+//! offset is an explicit zero constant and `q - 0` is `q`. `tests/test_coreml_blockwise_constants.rs` evaluates both lowerings on
 //! the CoreML runtime and compares the bits.
 //!
 //! # Readers of the constant
@@ -575,9 +576,7 @@ pub(crate) fn apply(graph: &mut GraphInfo, chains: Vec<Chain>) -> BlockwiseConst
             id
         };
         let scale = constant("scale", chain.float_type, chain.scale);
-        let zero_point = chain
-            .zero
-            .map(|byte| constant("offset", stored_type, vec![byte; count]));
+        let zero_point = constant("offset", stored_type, vec![chain.zero.unwrap_or(0); count]);
         graph.operations[chain.anchor] = Operation::DequantizeLinear {
             input: chain.data,
             scale,
@@ -853,7 +852,7 @@ mod tests {
             .unwrap()
     }
 
-    fn dequantize(graph: &GraphInfo, output: MLOperand) -> (u32, u32, Option<u32>) {
+    fn dequantize(graph: &GraphInfo, output: MLOperand) -> (u32, u32, u32) {
         graph
             .operations
             .iter()
@@ -919,7 +918,6 @@ mod tests {
             payload(&rewritten, scale),
             float_bytes(&scale_values(rows * groups), DataType::Float16)
         );
-        let zero_point = zero_point.expect("a nonzero zero point is an offset");
         assert_eq!(
             shape_of(&rewritten, zero_point),
             (DataType::Uint8, vec![rows, groups])
@@ -944,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn int8_without_a_zero_point_has_no_offset_in_either_operand_order() {
+    fn int8_without_a_zero_point_gets_a_zero_offset_in_either_operand_order() {
         for swapped in [false, true] {
             let (rows, groups, width) = (3u32, 9u32, 64u32);
             let mut builder = MLGraphBuilder::new_uncompiled();
@@ -977,7 +975,11 @@ mod tests {
             let (rewritten, _) = rewrite(&graph).expect("the chain is recognized");
             let (input, scale, zero_point) = dequantize(&rewritten, weight);
             assert_eq!(input, data.rustnn_index());
-            assert_eq!(zero_point, None, "swapped={swapped}");
+            assert_eq!(
+                payload(&rewritten, zero_point),
+                vec![0; (rows * groups) as usize],
+                "swapped={swapped}"
+            );
             assert_eq!(
                 shape_of(&rewritten, scale),
                 (DataType::Float32, vec![rows, groups])
@@ -986,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_point_of_zero_needs_no_offset() {
+    fn a_zero_point_of_zero_gets_an_explicit_zero_offset() {
         for zero in [0.0f32, -0.0] {
             let mut builder = MLGraphBuilder::new_uncompiled();
             let built = chain(
@@ -998,7 +1000,10 @@ mod tests {
             );
             let graph = finish(builder, built.weight);
             let (rewritten, _) = rewrite(&graph).expect("the chain is recognized");
-            assert_eq!(dequantize(&rewritten, built.weight).2, None);
+            assert_eq!(
+                payload(&rewritten, dequantize(&rewritten, built.weight).2),
+                vec![0; 4]
+            );
             assert_eq!(
                 operation_types(&rewritten),
                 ["dequantizeLinear", "identity"]
@@ -1018,7 +1023,7 @@ mod tests {
         );
         let graph = finish(builder, built.weight);
         let (rewritten, _) = rewrite(&graph).unwrap();
-        let zero_point = dequantize(&rewritten, built.weight).2.unwrap();
+        let zero_point = dequantize(&rewritten, built.weight).2;
         assert_eq!(
             shape_of(&rewritten, zero_point),
             (DataType::Int8, vec![2, 2])
@@ -1151,10 +1156,7 @@ mod tests {
                 (DataType::Float16, expected.to_vec()),
                 "{shape:?}"
             );
-            assert_eq!(
-                shape_of(&rewritten, zero_point.unwrap()).1,
-                expected.to_vec()
-            );
+            assert_eq!(shape_of(&rewritten, zero_point).1, expected.to_vec());
         }
         // One block per row: `[n, 1, k]` blocks with a `[n, 1, 1]` scale.
         let mut builder = MLGraphBuilder::new_uncompiled();
@@ -1522,7 +1524,7 @@ mod tests {
         let second = dequantize(&rewritten, weights[1]);
         let original = graph.operands.len() as u32;
         assert_eq!(
-            [first.1, first.2.unwrap(), second.1, second.2.unwrap()],
+            [first.1, first.2, second.1, second.2],
             [original, original + 1, original + 2, original + 3]
         );
     }
@@ -1921,7 +1923,10 @@ mod tests {
             let [leaf] = lowered.of_type(BLOCKWISE)[..] else {
                 panic!("one constant for every reader")
             };
-            assert!(!leaf.inputs.contains_key("offset"));
+            assert_eq!(
+                lowered.blob(bound_name(leaf, "offset")),
+                vec![0; (rows * groups) as usize]
+            );
             let table = leaf.outputs[0].name.as_str();
             let [lookup] = lowered.of_type("gather")[..] else {
                 panic!("one gather")
@@ -1940,7 +1945,11 @@ mod tests {
             );
             assert_eq!(
                 lowered.weights.len(),
-                blob_size(&[(rows * columns) as usize, (rows * groups * 2) as usize]),
+                blob_size(&[
+                    (rows * columns) as usize,
+                    (rows * groups * 2) as usize,
+                    (rows * groups) as usize,
+                ]),
                 "the table is stored once, as int8"
             );
         }

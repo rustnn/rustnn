@@ -165,8 +165,8 @@ Rules that hold for every converter:
   a block (`[n, g, 1]`, or a shape that broadcasts to it; read through at most one `cast` and
   one `reshape`), and a `reshape` back to `[n, k]`. It becomes one `dequantizeLinear` over
   constants that is emitted as MIL `constexpr_blockwise_shift_scale`: the weights blob keeps
-  the stored bytes, a `[n', g']` scale in the chain's float type and, for a nonzero zero
-  point, an offset of that shape in the stored type, and CoreML decompresses the constant
+  the stored bytes, a `[n', g']` scale in the chain's float type and an offset of that
+  shape in the stored type (an explicit zero constant when the chain has no subtraction), and CoreML decompresses the constant
   instead of evaluating the chain into a float copy.
   Every intermediate of the chain must be read by the chain alone and none may be a graph
   output; a graph that does not match is lowered as before, and an authored `dequantizeLinear`

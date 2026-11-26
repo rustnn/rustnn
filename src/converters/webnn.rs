@@ -1350,10 +1350,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                         .quantize_linear_with_options(
                             get_operand(&operands, *input),
                             get_operand(&operands, *scale),
-                            get_operand(
-                                &operands,
-                                zero_point.expect("WebNN always expects a zero point!"),
-                            ),
+                            get_operand(&operands, *zero_point),
                             &ml_opts,
                         )
                         .map_err(WebNNConverterError::BuilderOperationFailed)?,
@@ -1371,10 +1368,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                         .dequantize_linear_with_options(
                             get_operand(&operands, *input),
                             get_operand(&operands, *scale),
-                            get_operand(
-                                &operands,
-                                zero_point.expect("WebNN always expects a zero point!"),
-                            ),
+                            get_operand(&operands, *zero_point),
                             &ml_opts,
                         )
                         .map_err(WebNNConverterError::BuilderOperationFailed)?,

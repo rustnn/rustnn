@@ -66,7 +66,7 @@ pub const fn allowed_data_types(
 /// `GraphInfo` resolves the operand IDs stored by `Operation`. A violation reports
 /// operation, operand, allowed types, and actual type through [`AllowedDataTypesError`].
 /// `SameAs` rules compare actual operand types, including every sequence item.
-/// Optional quantization zero points default to uint8 when absent.
+/// Quantization zero points are required and determine the quantized data type.
 ///
 /// `by_pass_check` skips type validation and logs a warning on every call. Shape
 /// and reference validation elsewhere remain active. Emulated
@@ -186,15 +186,6 @@ fn input_data_types(
             },
         )?;
         types.push((operand_name, operand.descriptor.data_type));
-    }
-    if matches!(
-        operation,
-        Operation::QuantizeLinear {
-            zero_point: None,
-            ..
-        }
-    ) {
-        types.push((OperandName::ZeroPoint, MLOperandDataType::Uint8));
     }
     Ok(types)
 }
@@ -472,11 +463,11 @@ pub(crate) fn named_input_operands(operation: &Operation) -> Vec<(OperandName, u
             zero_point,
             ..
         } => {
-            let mut values = vec![(OperandName::Input, *input), (OperandName::Scale, *scale)];
-            if let Some(id) = zero_point {
-                values.push((OperandName::ZeroPoint, *id));
-            }
-            values
+            vec![
+                (OperandName::Input, *input),
+                (OperandName::Scale, *scale),
+                (OperandName::ZeroPoint, *zero_point),
+            ]
         }
     };
     match operation {

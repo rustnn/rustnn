@@ -2688,8 +2688,7 @@ impl CoremlMlProgramConverter {
         if scale_op.kind != crate::graph::OperandKind::Constant {
             return true;
         }
-        if let Some(zp_id) = zero_point_id
-            && let Some(zp_op) = graph.operand(zp_id)
+        if let Some(zp_op) = graph.operand(zero_point_id)
             && zp_op.kind != crate::graph::OperandKind::Constant
         {
             return true;
@@ -3516,30 +3515,12 @@ impl CoremlMlProgramConverter {
         if input_op.descriptor.shape.is_empty() {
             return false;
         }
-        // constexpr_affine_dequantize requires scale and zero_point to be both
-        // scalar or both per-channel vectors; a synthesized zero point is
-        // always scalar, so a missing zeroPoint pairs only with a scalar scale.
-        match zero_point {
-            None => {
-                let per_channel = scale_op
-                    .descriptor
-                    .static_or_max_shape()
-                    .iter()
-                    .any(|&d| d != 1);
-                if per_channel {
-                    return false;
-                }
-            }
-            Some(zp) => {
-                // The blob payload was written with the zero point's own dtype;
-                // a dtype-coerced zero point (e.g. int32) would mismatch it.
-                let Some(zp_op) = graph.operand(*zp) else {
-                    return false;
-                };
-                if zp_op.descriptor.data_type != input_op.descriptor.data_type {
-                    return false;
-                }
-            }
+        // The blob payload must use the quantized input's data type.
+        let Some(zp_op) = graph.operand(*zero_point) else {
+            return false;
+        };
+        if zp_op.descriptor.data_type != input_op.descriptor.data_type {
+            return false;
         }
         // A per-channel scale must exactly cover the derived axis:
         // constexpr_affine_dequantize cannot express a single-axis BLOCKWISE
@@ -3642,44 +3623,6 @@ impl CoremlMlProgramConverter {
         })
     }
 
-    /// Immediate rank-0 zero of the given quantized dtype (int8/uint8), the
-    /// synthesized `zero_point` for `constexpr_affine_dequantize`.
-    fn constexpr_zero_value(
-        data_type: &DataType,
-    ) -> Result<crate::protos::coreml::mil_spec::Value, GraphError> {
-        use crate::protos::coreml::mil_spec::{
-            TensorType, TensorValue, Value, ValueType, tensor_value, value, value_type,
-        };
-
-        let mil_type = match data_type {
-            DataType::Int8 | DataType::Uint8 => Self::mil_data_type(data_type)?,
-            other => {
-                return Err(GraphError::ConversionFailed {
-                    format: "coreml_mlprogram".to_string(),
-                    reason: format!("no quantized zero-point immediate for {other:?}"),
-                });
-            }
-        };
-        Ok(Value {
-            doc_string: String::new(),
-            r#type: Some(ValueType {
-                r#type: Some(value_type::Type::TensorType(TensorType {
-                    data_type: mil_type,
-                    rank: 0,
-                    dimensions: vec![],
-                    attributes: HashMap::new(),
-                })),
-            }),
-            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
-                value: Some(value::immediate_value::Value::Tensor(TensorValue {
-                    value: Some(tensor_value::Value::Bytes(tensor_value::RepeatedBytes {
-                        values: vec![0u8].into(),
-                    })),
-                })),
-            })),
-        })
-    }
-
     /// Emit `constexpr_affine_dequantize` (dequantized = scale * (data - zp))
     /// for a dequantizeLinear over constant weights. CoreML requires constexpr
     /// parameters as compile-time value ATTRIBUTES (immediate or blob-file),
@@ -3750,10 +3693,8 @@ impl CoremlMlProgramConverter {
             "scale".to_string(),
             Self::constexpr_param_value(graph, weight_builder, *scale, param_shape)?,
         );
-        let zp_value = match zero_point {
-            Some(zp) => Self::constexpr_param_value(graph, weight_builder, *zp, param_shape)?,
-            None => Self::constexpr_zero_value(&input_op.descriptor.data_type)?,
-        };
+        let zp_value =
+            Self::constexpr_param_value(graph, weight_builder, *zero_point, param_shape)?;
         attributes.insert("zero_point".to_string(), zp_value);
         attributes.insert("axis".to_string(), Self::constexpr_axis_value(axis));
 
@@ -3804,12 +3745,10 @@ impl CoremlMlProgramConverter {
                 Self::create_name_argument(operand_name(graph, *scale)),
             ),
         ]);
-        if let Some(zero_point) = zero_point {
-            inputs.insert(
-                "offset".to_string(),
-                Self::create_name_argument(operand_name(graph, *zero_point)),
-            );
-        }
+        inputs.insert(
+            "offset".to_string(),
+            Self::create_name_argument(operand_name(graph, *zero_point)),
+        );
         main_block.operations.push(Self::create_mil_operation(
             "constexpr_blockwise_shift_scale",
             inputs,
@@ -4177,8 +4116,8 @@ impl CoremlMlProgramConverter {
             vec![scale_r_type],
         ));
 
-        // 3. (input - zeroPoint), if a zero_point is present.
-        let minus_zp_name = if let Some(zp_id) = zp_id {
+        // 3. Subtract zeroPoint.
+        let minus_zp_name = {
             let zp_name = Self::output_name_for_operand(graph, zp_id, overrides);
             let zp_f_name = format!("{}_dq_zp_f", output_name);
             let zp_f_type =
@@ -4212,8 +4151,6 @@ impl CoremlMlProgramConverter {
                 vec![sub_type],
             ));
             sub_name
-        } else {
-            in_r_name
         };
 
         // 4. multiply by scale, reshape back to the input shape.
@@ -4380,8 +4317,8 @@ impl CoremlMlProgramConverter {
             Self::value_type_for_static_shape(round_name.clone(), float_dtype, &interleaved_input);
         Self::emit_round_even(graph, main_block, div_name, round_type);
 
-        // 4. add the zero_point (cast to float, reshaped), if present.
-        let biased_name = if let Some(zp_id) = zp_id {
+        // 4. Add zero_point (cast to float, reshaped).
+        let biased_name = {
             let zp_name = Self::output_name_for_operand(graph, zp_id, overrides);
             let zp_f_name = format!("{}_q_zp_f", output_name);
             let zp_f_type =
@@ -4423,8 +4360,6 @@ impl CoremlMlProgramConverter {
                 vec![add_type],
             ));
             add_name
-        } else {
-            round_name
         };
 
         // 5. clamp to the quantized type's range (int32 spans the proxy and needs no clamp).
@@ -5486,12 +5421,10 @@ impl CoremlMlProgramConverter {
                 if input_names.len() >= 2 => {
                     inputs.insert("input".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert("scale".to_string(), Self::create_argument(&input_names[1]));
-                    if input_names.len() >= 3 {
-                        inputs.insert(
-                            "zero_point".to_string(),
-                            Self::create_argument(&input_names[2]),
-                        );
-                    }
+                    inputs.insert(
+                        "zero_point".to_string(),
+                        Self::create_argument(&input_names[2]),
+                    );
                     // When scale is truly per-channel (one non-unit dim), CoreML requires
                     // an explicit axis. For per-tensor (scalar or single-element), omit axis.
                     // Note: single-element scales [1] are squeezed to scalar at constant emit
@@ -15126,13 +15059,11 @@ mod tests {
         }
     }
 
-    /// Graph: dequantizeLinear(int8 constant of `input_shape`, f32 constant
-    /// scale of `scale_shape`, no zero point) -> f32 output. Without a zero
-    /// point a per-channel scale can't use constexpr_affine_dequantize, so the
-    /// op exercises the native/decomposed dequantize paths.
+    /// Graph: dequantizeLinear(int8 input, f32 constant scale, matching int8
+    /// zero-point constant) -> f32 output, exercising native/decomposed lowering.
     fn create_dequantize_graph(input_shape: &[u32], scale_shape: &[u32]) -> GraphInfo {
         let mut graph = GraphInfo {
-            input_operands: vec![],
+            input_operands: vec![0],
             output_operands: vec![2],
             operands: vec![],
             operations: vec![],
@@ -15141,21 +15072,13 @@ mod tests {
         };
         graph.operands.push(Operand {
             name: Some("weights".to_string()),
-            kind: OperandKind::Constant,
+            kind: OperandKind::Input,
             descriptor: OperandDescriptor {
                 data_type: DataType::Int8,
                 shape: s(input_shape),
                 pending_permutation: vec![],
             },
         });
-        let input_len = input_shape.iter().product::<u32>() as usize;
-        graph.constant_operand_ids_to_handles.insert(
-            0,
-            ConstantData {
-                data: vec![1u8; input_len],
-                label: None,
-            },
-        );
         graph.operands.push(Operand {
             name: Some("scale".to_string()),
             kind: OperandKind::Constant,
@@ -15182,9 +15105,25 @@ mod tests {
                 pending_permutation: vec![],
             },
         });
+        graph.operands.push(Operand {
+            name: Some("zero_point".to_string()),
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: s(scale_shape),
+                pending_permutation: vec![],
+            },
+        });
+        graph.constant_operand_ids_to_handles.insert(
+            3,
+            ConstantData {
+                data: vec![0; scale_len],
+                label: None,
+            },
+        );
         graph.operations.push(op_from_operator_options(
             "dequantizeLinear",
-            vec![0, 1],
+            vec![0, 1, 3],
             Some(2),
             vec![],
             OperatorOptions::default(),

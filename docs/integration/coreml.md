@@ -116,7 +116,7 @@ A graph can author a weight matrix as an explicit dequantization of constants: a
 `uint8` constant `[n, k]`, `cast` to `float16` or `float32`, an optional `sub` of a scalar zero
 point, `reshape` to blocks `[n, g, k / g]`, `mul` by a constant scale `[n, g, 1]` and `reshape`
 back to `[n, k]`. The converter keeps such a weight quantized. The weights blob holds the
-original bytes, one scale per block and, for a nonzero zero point, one offset per block, and
+original bytes, one scale and one offset per block (zero when the chain has no subtraction), and
 the model declares a `constexpr_blockwise_shift_scale` constant that CoreML decompresses
 itself. Nothing has to be enabled, and a graph without such a chain converts as before. [Converter internals](https://rustnn.github.io/rustnn/development/converters/#coreml)
 lists what is recognized.

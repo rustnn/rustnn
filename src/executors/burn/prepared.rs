@@ -157,9 +157,7 @@ fn validate_plan(plan: &BurnGraphPlan) -> Result<(), GraphError> {
             | Operation::IsNaN { .. }
             | Operation::IsInfinite { .. } => DataType::Uint8,
             Operation::Where { true_value, .. } => plan.operand_types[true_value],
-            Operation::QuantizeLinear { zero_point, .. } => {
-                zero_point.map_or(DataType::Uint8, |id| plan.operand_types[&id])
-            }
+            Operation::QuantizeLinear { zero_point, .. } => plan.operand_types[zero_point],
             Operation::DequantizeLinear { scale, .. } => plan.operand_types[scale],
             _ => first_type,
         };

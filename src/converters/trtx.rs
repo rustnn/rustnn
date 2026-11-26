@@ -788,38 +788,24 @@ impl TrtxConverter {
                         }
                     }
                 }
-                Operation::QuantizeLinear { .. } => {
-                    let ins = op.input_operands();
-                    if ins.len() >= 2 {
-                        let scale_id = ins[1];
-                        if Self::is_graph_constant(graph, scale_id) {
-                            ids.insert(scale_id);
-                        }
-                    }
-                    if ins.len() >= 3 {
-                        let zp_id = ins[2];
-                        if Self::is_graph_constant(graph, zp_id) {
-                            ids.insert(zp_id);
+                Operation::QuantizeLinear {
+                    scale, zero_point, ..
+                } => {
+                    for id in [*scale, *zero_point] {
+                        if Self::is_graph_constant(graph, id) {
+                            ids.insert(id);
                         }
                     }
                 }
-                Operation::DequantizeLinear { .. } => {
-                    let ins = op.input_operands();
-                    if let Some(&in_id) = ins.first()
-                        && Self::is_graph_constant(graph, in_id)
-                    {
-                        ids.insert(in_id);
-                    }
-                    if ins.len() >= 2 {
-                        let scale_id = ins[1];
-                        if Self::is_graph_constant(graph, scale_id) {
-                            ids.insert(scale_id);
-                        }
-                    }
-                    if ins.len() >= 3 {
-                        let zp_id = ins[2];
-                        if Self::is_graph_constant(graph, zp_id) {
-                            ids.insert(zp_id);
+                Operation::DequantizeLinear {
+                    input,
+                    scale,
+                    zero_point,
+                    ..
+                } => {
+                    for id in [*input, *scale, *zero_point] {
+                        if Self::is_graph_constant(graph, id) {
+                            ids.insert(id);
                         }
                     }
                 }
@@ -4064,7 +4050,7 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         in_id: u32,
         sc_id: u32,
-        zp_id: Option<u32>,
+        zp_id: u32,
         input: &trtx::Tensor<'a>,
         out_dtype: DataType,
         fp_trt: TrtDataType,
@@ -4111,53 +4097,51 @@ impl TrtxConverter {
             .map(|&i| sc_f32.get(i).copied().unwrap_or(1.0))
             .collect();
 
-        // Expand the (optional) constant zero-point to one float value per element.
-        let zp_per_elem: Vec<f32> = match zp_id {
-            Some(zid) => {
-                let z_operand = graph
-                    .operand(zid)
-                    .ok_or_else(|| GraphError::ConversionFailed {
+        // Expand the constant zero-point to one float value per element.
+        let zp_per_elem: Vec<f32> = {
+            let zid = zp_id;
+            let z_operand = graph
+                .operand(zid)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("quantizeLinear zero_point operand {zid} not found"),
+                })?;
+            let z_shape = z_operand.descriptor.static_or_max_shape();
+            let z_count: usize = z_shape
+                .iter()
+                .map(|&d| d as usize)
+                .product::<usize>()
+                .max(1);
+            let z_data = Self::get_constant_data(graph, zid)?;
+            let z_vals_f32: Vec<f32> = match z_operand.descriptor.data_type {
+                DataType::Int4 => crate::graph::unpack_int4(z_data, z_count)
+                    .into_iter()
+                    .map(|v| v as f32)
+                    .collect(),
+                DataType::Uint4 => crate::graph::unpack_uint4(z_data, z_count)
+                    .into_iter()
+                    .map(|v| v as f32)
+                    .collect(),
+                DataType::Int8 => z_data.iter().map(|&b| (b as i8) as f32).collect(),
+                DataType::Uint8 => z_data.iter().map(|&b| b as f32).collect(),
+                DataType::Int32 | DataType::Uint32 => z_data
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
+                    .collect(),
+                other => {
+                    return Err(GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("quantizeLinear zero_point operand {zid} not found"),
-                    })?;
-                let z_shape = z_operand.descriptor.static_or_max_shape();
-                let z_count: usize = z_shape
-                    .iter()
-                    .map(|&d| d as usize)
-                    .product::<usize>()
-                    .max(1);
-                let z_data = Self::get_constant_data(graph, zid)?;
-                let z_vals_f32: Vec<f32> = match z_operand.descriptor.data_type {
-                    DataType::Int4 => crate::graph::unpack_int4(z_data, z_count)
-                        .into_iter()
-                        .map(|v| v as f32)
-                        .collect(),
-                    DataType::Uint4 => crate::graph::unpack_uint4(z_data, z_count)
-                        .into_iter()
-                        .map(|v| v as f32)
-                        .collect(),
-                    DataType::Int8 => z_data.iter().map(|&b| (b as i8) as f32).collect(),
-                    DataType::Uint8 => z_data.iter().map(|&b| b as f32).collect(),
-                    DataType::Int32 | DataType::Uint32 => z_data
-                        .chunks_exact(4)
-                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
-                        .collect(),
-                    other => {
-                        return Err(GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!(
-                                "quantizeLinear int4 1D zero_point unsupported dtype {other:?}"
-                            ),
-                        });
-                    }
-                };
-                let z_idx = Self::trtx_expand_block_param_indices(&in_shape, &z_shape);
-                z_idx
-                    .iter()
-                    .map(|&i| z_vals_f32.get(i).copied().unwrap_or(0.0))
-                    .collect()
-            }
-            None => vec![0.0f32; volume as usize],
+                        reason: format!(
+                            "quantizeLinear int4 1D zero_point unsupported dtype {other:?}"
+                        ),
+                    });
+                }
+            };
+            let z_idx = Self::trtx_expand_block_param_indices(&in_shape, &z_shape);
+            z_idx
+                .iter()
+                .map(|&i| z_vals_f32.get(i).copied().unwrap_or(0.0))
+                .collect()
         };
 
         let to_bytes = |vals: &[f32]| -> Vec<u8> {
@@ -4220,7 +4204,7 @@ impl TrtxConverter {
             network,
             in_id,
             sc_id,
-            zp_id.unwrap_or(in_id),
+            zp_id,
             &flat_input,
             &scale_const,
             &zp_const,
@@ -4805,15 +4789,6 @@ impl TrtxConverter {
             });
         }
 
-        let in_rank0 = {
-            let t = tensor_map
-                .get(&in_id)
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Input operand {in_id} not found"),
-                })?;
-            Self::trtx_tensor_dims_empty(&*network, graph, in_id, t)?
-        };
         let sc_rank0 = {
             let t = tensor_map
                 .get(&sc_id)
@@ -4823,41 +4798,14 @@ impl TrtxConverter {
                 })?;
             Self::trtx_tensor_dims_empty(&*network, graph, sc_id, t)?
         };
-        let zp_rank0 = if ins.len() > 2 {
-            let zid = ins[2];
-            let zp = tensor_map
-                .get(&zid)
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Zero point operand {zid} not found"),
-                })?;
-            Self::trtx_tensor_dims_empty(&*network, graph, zid, zp)?
-        } else {
-            false
-        };
-
-        // IQuantizeLayer has no zero-point input and rejects UInt8 output; Int4/Uint4 and 32-bit
-        // integer outputs use the elementwise path (explicit zero-point and clamp range).
-        let use_manual = in_rank0
-            || sc_rank0
-            || zp_rank0
-            || ins.len() > 2
-            || matches!(
-                out_dtype,
-                DataType::Uint8
-                    | DataType::Int4
-                    | DataType::Uint4
-                    | DataType::Int32
-                    | DataType::Uint32
-            );
-
+        // WebNN requires an explicit zero point, so use the elementwise path.
         // Sub-byte block/per-channel quantize on rank>=2 inputs hits a Myelin sub-byte block-quantize
         // assertion. When the params are constants, run it fully in 1D with pre-expanded scale/zp.
         if matches!(out_dtype, DataType::Int4 | DataType::Uint4)
             && in_operand.descriptor.shape.len() >= 2
             && !sc_rank0
             && Self::is_graph_constant(graph, sc_id)
-            && (ins.len() == 2 || Self::is_graph_constant(graph, ins[2]))
+            && Self::is_graph_constant(graph, ins[2])
         {
             let input = tensor_map
                 .get(&in_id)
@@ -4866,208 +4814,75 @@ impl TrtxConverter {
                     reason: format!("Input operand {in_id} not found"),
                 })?;
             let out = Self::add_quantize_linear_int4_block_1d(
-                graph,
-                network,
-                in_id,
-                sc_id,
-                if ins.len() > 2 { Some(ins[2]) } else { None },
-                input,
-                out_dtype,
-                fp_trt,
-                out_trt,
-                output_id,
+                graph, network, in_id, sc_id, ins[2], input, out_dtype, fp_trt, out_trt, output_id,
             )?;
             tensor_map.insert(output_id, out);
             return Ok(());
         }
 
-        if use_manual {
-            let in_shape = in_operand.descriptor.static_or_max_shape();
-            let out = if ins.len() > 2 {
-                let zid = ins[2];
-                let input = tensor_map
-                    .get(&in_id)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Input operand {in_id} not found"),
-                    })?;
-                let scale = tensor_map
-                    .get(&sc_id)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Scale operand {sc_id} not found"),
-                    })?;
-                let zp = tensor_map
-                    .get(&zid)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Zero point operand {zid} not found"),
-                    })?;
-                let sc_operand =
-                    graph
-                        .operand(sc_id)
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!(
-                                "quantizeLinear scale operand {sc_id} missing from graph"
-                            ),
-                        })?;
-                let z_operand = graph
-                    .operand(zid)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!(
-                            "quantizeLinear zero_point operand {zid} missing from graph"
-                        ),
-                    })?;
-                let sc_shape = sc_operand.descriptor.static_or_max_shape();
-                let z_shape = z_operand.descriptor.static_or_max_shape();
-                let scale_a = Self::trtx_align_quantize_param_for_elementwise(
-                    network,
-                    graph,
-                    sc_id,
-                    scale,
-                    &sc_shape,
-                    &in_shape,
-                    "quantizeLinear scale",
-                    None,
-                    None,
-                )?;
-                let zp_a = Self::trtx_align_quantize_param_for_elementwise(
-                    network,
-                    graph,
-                    zid,
-                    zp,
-                    &z_shape,
-                    &in_shape,
-                    "quantizeLinear zero_point",
-                    Some(fp_trt),
-                    Some(z_operand.descriptor.data_type),
-                )?;
-                Self::add_quantize_linear_elementwise_manual(
-                    graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt, out_trt,
-                    out_dtype, output_id,
-                )?
-            } else {
-                let (zdt, zp_bytes): (TrtDataType, &[u8]) = match out_dtype {
-                    DataType::Int8 => (TrtDataType::kINT8, &[0u8][..]),
-                    // A kUINT8 constant may only feed Cast, never the identity DQ the
-                    // manual path uses; a zero byte reads identically as kINT8.
-                    DataType::Uint8 => (TrtDataType::kINT8, &[0u8][..]),
-                    // Scalar default zp `[0]` must not use kINT4 with `add_small_constant_copied` (trtx-rs
-                    // byte-size check). kINT8 zero is fine: manual path casts zp to float.
-                    DataType::Int4 => (TrtDataType::kINT8, &[0u8][..]),
-                    DataType::Uint4 => (TrtDataType::kINT8, &[0u8][..]),
-                    DataType::Int32 | DataType::Uint32 => {
-                        (TrtDataType::kINT32, &[0u8, 0u8, 0u8, 0u8][..])
-                    }
-                    _ => {
-                        return Err(GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!(
-                                "quantizeLinear default zero point: unsupported output dtype {:?}",
-                                out_dtype
-                            ),
-                        });
-                    }
-                };
-                let input = tensor_map
-                    .get(&in_id)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Input operand {in_id} not found"),
-                    })?;
-                let scale = tensor_map
-                    .get(&sc_id)
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Scale operand {sc_id} not found"),
-                    })?;
-                let zp_const = network
-                    .add_small_constant_copied(&[1_i64], zp_bytes, zdt, None)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("quantizeLinear default zero_point constant: {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("quantizeLinear default zero_point output: {e}"),
-                    })?;
-                let sc_operand =
-                    graph
-                        .operand(sc_id)
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!(
-                                "quantizeLinear scale operand {sc_id} missing from graph"
-                            ),
-                        })?;
-                let sc_shape = sc_operand.descriptor.static_or_max_shape();
-                let scale_a = Self::trtx_align_quantize_param_for_elementwise(
-                    network,
-                    graph,
-                    sc_id,
-                    scale,
-                    &sc_shape,
-                    &in_shape,
-                    "quantizeLinear scale",
-                    None,
-                    None,
-                )?;
-                let zp_a = Self::trtx_align_quantize_param_for_elementwise(
-                    network,
-                    graph,
-                    in_id,
-                    &zp_const,
-                    &[1],
-                    &in_shape,
-                    "quantizeLinear zero_point",
-                    Some(fp_trt),
-                    Some(out_dtype),
-                )?;
-                Self::add_quantize_linear_elementwise_manual(
-                    graph, network, in_id, sc_id, in_id, input, &scale_a, &zp_a, fp_trt, out_trt,
-                    out_dtype, output_id,
-                )?
-            };
-            tensor_map.insert(output_id, out);
-            return Ok(());
-        }
-
-        let input = tensor_map
-            .get(&in_id)
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Input operand {in_id} not found"),
-            })?;
-        let scale = tensor_map
-            .get(&sc_id)
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Scale operand {sc_id} not found"),
-            })?;
-
-        let input_q =
-            Self::trtx_qdq_ensure_rank1(network, graph, in_id, input, "quantizeLinear input")?;
-        let scale_q =
-            Self::trtx_qdq_ensure_rank1(network, graph, sc_id, scale, "quantizeLinear scale")?;
-
-        let layer = network
-            .add_quantize(&input_q, &scale_q, out_trt)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add quantize layer: {}", e),
-            })?;
-
-        let output = layer
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get quantize output: {}", e),
-            })?;
-
-        tensor_map.insert(output_id, output);
+        let in_shape = in_operand.descriptor.static_or_max_shape();
+        let out = {
+            let zid = ins[2];
+            let input = tensor_map
+                .get(&in_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Input operand {in_id} not found"),
+                })?;
+            let scale = tensor_map
+                .get(&sc_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Scale operand {sc_id} not found"),
+                })?;
+            let zp = tensor_map
+                .get(&zid)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Zero point operand {zid} not found"),
+                })?;
+            let sc_operand = graph
+                .operand(sc_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("quantizeLinear scale operand {sc_id} missing from graph"),
+                })?;
+            let z_operand = graph
+                .operand(zid)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("quantizeLinear zero_point operand {zid} missing from graph"),
+                })?;
+            let sc_shape = sc_operand.descriptor.static_or_max_shape();
+            let z_shape = z_operand.descriptor.static_or_max_shape();
+            let scale_a = Self::trtx_align_quantize_param_for_elementwise(
+                network,
+                graph,
+                sc_id,
+                scale,
+                &sc_shape,
+                &in_shape,
+                "quantizeLinear scale",
+                None,
+                None,
+            )?;
+            let zp_a = Self::trtx_align_quantize_param_for_elementwise(
+                network,
+                graph,
+                zid,
+                zp,
+                &z_shape,
+                &in_shape,
+                "quantizeLinear zero_point",
+                Some(fp_trt),
+                Some(z_operand.descriptor.data_type),
+            )?;
+            Self::add_quantize_linear_elementwise_manual(
+                graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt, out_trt,
+                out_dtype, output_id,
+            )?
+        };
+        tensor_map.insert(output_id, out);
         Ok(())
     }
 
@@ -5281,7 +5096,7 @@ impl TrtxConverter {
             scale_for_zp = &scale_zp_holder;
         }
 
-        if ins.len() > 2 {
+        {
             let z_id = ins[2];
             let z_operand = graph
                 .operand(z_id)

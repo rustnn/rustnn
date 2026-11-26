@@ -934,20 +934,20 @@ fn cast_shape(
 fn quantize_linear_shape(
     input: MLOperand,
     scale: MLOperand,
-    zero_point: Option<u32>,
+    zero_point: u32,
     operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let input_op = get_operand(input, graph)?;
     validate_quantization_parameters(input, scale, zero_point, operation, graph, true)?;
-    let data_type = match zero_point {
-        Some(zp) => {
-            get_operand(MLOperand { id: zp as usize }, graph)?
-                .descriptor
-                .data_type
-        }
-        None => DataType::Uint8,
-    };
+    let data_type = get_operand(
+        MLOperand {
+            id: zero_point as usize,
+        },
+        graph,
+    )?
+    .descriptor
+    .data_type;
     Ok(OperandDescriptor {
         data_type,
         shape: input_op.descriptor.shape.clone(),
@@ -959,7 +959,7 @@ fn quantize_linear_shape(
 fn dequantize_linear_shape(
     input: MLOperand,
     scale: MLOperand,
-    zero_point: Option<u32>,
+    zero_point: u32,
     operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
@@ -976,17 +976,20 @@ fn dequantize_linear_shape(
 fn validate_quantization_parameters(
     input: MLOperand,
     scale: MLOperand,
-    zero_point: Option<u32>,
+    zero_point: u32,
     operation: &Operation,
     graph: &GraphInfo,
     is_quantize: bool,
 ) -> Result<()> {
     let input = &get_operand(input, graph)?.descriptor;
     let scale = &get_operand(scale, graph)?.descriptor;
-    let zero_point = zero_point
-        .map(|id| get_operand(MLOperand { id: id as usize }, graph))
-        .transpose()?
-        .map(|operand| &operand.descriptor);
+    let zero_point = &get_operand(
+        MLOperand {
+            id: zero_point as usize,
+        },
+        graph,
+    )?
+    .descriptor;
     check_quantization_parameters(input, scale, zero_point).map_err(|source| {
         Box::new(ShapeInferenceError::InferError {
             op_name: if is_quantize {
@@ -1007,12 +1010,10 @@ fn validate_quantization_parameters(
 pub(crate) fn check_quantization_parameters(
     input: &OperandDescriptor,
     scale: &OperandDescriptor,
-    zero_point: Option<&OperandDescriptor>,
+    zero_point: &OperandDescriptor,
 ) -> std::result::Result<(), QuantizationParameterError> {
     use QuantizationParameterError as E;
-    if let Some(zero_point) = zero_point
-        && zero_point.shape != scale.shape
-    {
+    if zero_point.shape != scale.shape {
         return Err(E::ZeroPointShapeMismatch {
             zero_point: zero_point.shape.clone(),
             scale: scale.shape.clone(),
@@ -1218,54 +1219,6 @@ macro_rules! impl_ternary_op {
                     $arg1: a,
                     $arg2: b,
                     $arg3: c,
-                    options,
-                    outputs: vec![output_id],
-                },
-            )
-        }
-    };
-}
-
-/// Three required operands with an optional zero point in the internal representation.
-macro_rules! impl_quantization_op {
-    (
-        $(#[$meta:meta])*
-        $fn_name:ident,
-        $fn_with_options:ident,
-        $op:ident,
-        $option_type:ident,
-        $arg1:ident,
-        $arg2:ident,
-        $arg3:ident
-    ) => {
-        $(#[$meta])*
-        pub fn $fn_name(
-            &mut self,
-            $arg1: MLOperand,
-            $arg2: MLOperand,
-            $arg3: MLOperand,
-        ) -> Result<MLOperand> {
-            self.$fn_with_options($arg1, $arg2, $arg3, $option_type::default())
-        }
-
-        $(#[$meta])*
-        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
-        pub fn $fn_with_options(
-            &mut self,
-            $arg1: MLOperand,
-            $arg2: MLOperand,
-            $arg3: MLOperand,
-            options: $option_type,
-        ) -> Result<MLOperand> {
-            self.ternary_operation(
-                $arg1,
-                $arg2,
-                $arg3,
-                options,
-                |a, b, c, output_id, options| Operation::$op {
-                    $arg1: a,
-                    $arg2: b,
-                    $arg3: Some(c),
                     options,
                     outputs: vec![output_id],
                 },
@@ -2681,7 +2634,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         indices,
         updates
     );
-    impl_quantization_op!(
+    impl_ternary_op!(
         /// Quantizes `input` with required `scale` and `zero_point` operands to the zero point data type.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear>
         quantize_linear,
@@ -2692,7 +2645,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         scale,
         zero_point
     );
-    impl_quantization_op!(
+    impl_ternary_op!(
         /// Dequantizes `input` with required `scale` and `zero_point` operands to the scale data type.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear>
         dequantize_linear,

@@ -2461,7 +2461,8 @@ mod adapter {
                 connect_input(round, "x", div)?;
                 let mut value = round;
 
-                if let Some(zp_id) = zero_point {
+                {
+                    let zp_id = zero_point;
                     let zp_dtype = graph.operands[*zp_id as usize].descriptor.data_type;
                     let zp = if let Some(constant) = emit_const_as(
                         &format!("quant_zp_{out_id}"),
@@ -3500,9 +3501,8 @@ mod adapter {
                     cast
                 };
 
-                // With no zero point the value is already unbiased, so Mul reads the Cast output: a Sub
-                // with only x1 connected would be rejected or read garbage.
-                let x1 = if let Some(zp_id) = zero_point {
+                let x1 = {
+                    let zp_id = zero_point;
                     let zp_const = emit_const_as(
                         &format!("dequant_zp_{out_id}"),
                         *zp_id,
@@ -3526,8 +3526,6 @@ mod adapter {
                         None => connect_src_input(sub, "x2", *zp_id, &handles, &split_out)?,
                     }
                     sub
-                } else {
-                    cast
                 };
 
                 let mul = create_op(

@@ -44,7 +44,7 @@ fn graph(
             Operation::QuantizeLinear {
                 input: 0,
                 scale: 1,
-                zero_point: Some(2),
+                zero_point: 2,
                 options: None,
                 outputs: vec![3],
             }
@@ -52,7 +52,7 @@ fn graph(
             Operation::DequantizeLinear {
                 input: 0,
                 scale: 1,
-                zero_point: Some(2),
+                zero_point: 2,
                 options: None,
                 outputs: vec![3],
             }
@@ -438,5 +438,31 @@ fn quantization_accepts_the_specification_uint32_parameters() {
         );
         assert_imports(&graph);
         assert_imports(&builder_result(&graph).unwrap());
+    }
+}
+
+#[test]
+fn quantization_import_requires_a_zero_point() {
+    for quantize in [false, true] {
+        let graph = graph(
+            quantize,
+            if quantize {
+                DataType::Float32
+            } else {
+                DataType::Int8
+            },
+            DataType::Float32,
+            DataType::Int8,
+            &[2],
+            &[1],
+            &[1],
+        );
+        let mut interchange = rustnn::webnn_json::to_graph_json(&graph, false).unwrap();
+        interchange.nodes[0].inputs.pop();
+        assert!(rustnn::webnn_json::from_graph_json(&interchange).is_err());
+
+        let mut serialized = serde_json::to_value(&graph.operations[0]).unwrap();
+        serialized["input_operands"].as_array_mut().unwrap().pop();
+        assert!(serde_json::from_value::<Operation>(serialized).is_err());
     }
 }
