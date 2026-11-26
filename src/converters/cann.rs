@@ -1116,7 +1116,7 @@ mod adapter {
         }
         let dtype = operand.descriptor.data_type;
         let bpe = bytes_per_element(dtype)?;
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         // The const loop emits 8-bit constants as f32 (the DDK Const kernel
         // rejects int8/uint8), so re-emit them the same way here.
@@ -1190,7 +1190,7 @@ mod adapter {
         if operand.kind != crate::graph::OperandKind::Constant {
             return None;
         }
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, operand.descriptor.data_type)?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         if offsets.iter().any(|&offset| offset >= source.len()) {
@@ -1223,7 +1223,7 @@ mod adapter {
         if operand.kind != crate::graph::OperandKind::Constant {
             return None;
         }
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, operand.descriptor.data_type)?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         if offsets.iter().any(|&offset| offset >= source.len()) {
@@ -1256,7 +1256,7 @@ mod adapter {
             return None;
         }
         let dtype = operand.descriptor.data_type;
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, dtype)?;
         let dims = descriptor_dims(&operand.descriptor);
         let rank = dims.len();
@@ -1923,11 +1923,10 @@ mod adapter {
         }
         if dtype == DataType::Float16
             && operand.kind == crate::graph::OperandKind::Constant
-            && let Some(data) = graph.constant_operand_ids_to_handles.get(&id)
-            && data.data.len() % 2 == 0
+            && let Ok(data) = graph.constant_data(id)
+            && data.len() % 2 == 0
         {
             let values: Vec<u8> = data
-                .data
                 .chunks_exact(2)
                 .flat_map(|pair| {
                     half::f16::from_le_bytes([pair[0], pair[1]])
