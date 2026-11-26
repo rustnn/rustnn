@@ -180,8 +180,8 @@ configuration. The blob file is created on first use under `target/url_weights_b
 | `--size-mib <n>`, `--layers <n>` | Total weight size and number of layers (defaults 256 and 4) |
 | `--cache on` or `off` | TensorRT engine cache (default off) |
 | `--runtime-cache on` or `off` | TensorRT runtime cache (default off, so that the Rust heap peak shows weight buffers only) |
-| `--budget-mib <n>`, `--batch-mib <n>`, `--threads <n>` | `url` mode: `UrlFetchOptions::max_inflight_bytes`, `bind_batch_bytes` and `threads` |
-| `--weightless-build on` | Pointer modes: sets `RUSTNN_TRTX_WEIGHTLESS_BUILD=1`, so that host-buffer constants are also built as constant layers with null weights (placeholders) and refitted after the build |
+| `--budget-mib <n>`, `--batch-mib <n>`, `--threads <n>` | `url` mode: `max_inflight_bytes`, `bind_batch_bytes` and `threads` of `RustNNOptions::url_fetch` |
+| `--weightless-build on` | Pointer modes: sets `TrtxOptions::weightless_build`, so that host-buffer constants are also built as constant layers with null weights (placeholders) and refitted after the build |
 
 The TensorRT-RTX libraries have to be loadable (see
 [TensorRT-RTX](../integration/tensorrt.md)). The output checksum (`checksum`) is equal across

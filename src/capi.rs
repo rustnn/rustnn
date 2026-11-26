@@ -387,8 +387,9 @@ impl Default for RustnnTrtxOptions {
     }
 }
 
-/// C representation of [RustNNOptions]. The other backend option structures in the
-/// Rust API are currently empty, so TensorRT is the only member with settings.
+/// C representation of [RustNNOptions]. Only the TensorRT-RTX cache and CUDA graph settings
+/// are exposed; the other members (the CoreML options, `url_fetch` and
+/// `TrtxOptions::weightless_build`) keep their Rust defaults.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RustnnOptions {
@@ -545,6 +546,7 @@ fn context_options_from_c(
                 runtime_cache: options.rustnn_options.trtx.runtime_cache,
                 fail_on_cache_miss: options.rustnn_options.trtx.fail_on_cache_miss,
                 cuda_graphs: options.rustnn_options.trtx.cuda_graphs,
+                ..TrtxOptions::default()
             },
             ..RustNNOptions::default()
         });
@@ -4666,6 +4668,7 @@ mod tests {
                 runtime_cache: false,
                 fail_on_cache_miss: true,
                 cuda_graphs: false,
+                ..TrtxOptions::default()
             }
         );
     }

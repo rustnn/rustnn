@@ -2073,14 +2073,15 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             backend: Box::new(UncompiledBackendBuilder),
             recorder: Some(GraphRecorder::new()),
             weights_fetcher: Arc::new(DefaultWeightsFetcher),
-            url_fetch_options: UrlFetchOptions::from_env(),
+            url_fetch_options: UrlFetchOptions::default(),
         }
     }
 
     /// Record a backend-independent graph with context data type policies.
     ///
-    /// Only allowed-type bypass and packed 4-bit settings are used; this creates
-    /// no backend. The other contracts of [`Self::new_uncompiled`] apply.
+    /// Only the allowed-type bypass, the packed 4-bit setting and the URL fetch options
+    /// (`RustNNOptions::url_fetch`) are used; this creates no backend. The other contracts
+    /// of [`Self::new_uncompiled`] apply.
     pub fn new_uncompiled_with_options(
         options: &crate::mlcontextoptions::MLContextOptions,
     ) -> MLGraphBuilder<'static, 'static> {
@@ -2092,7 +2093,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                     .with_allow_int4_uint4(options.allow_int4_uint4),
             ),
             weights_fetcher: Arc::new(DefaultWeightsFetcher),
-            url_fetch_options: UrlFetchOptions::from_env(),
+            url_fetch_options: options.rustnn_options.url_fetch.clone(),
         }
     }
 
@@ -2111,7 +2112,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                     .with_allow_int4_uint4(context.allow_int4_uint4),
             ),
             weights_fetcher: Arc::new(DefaultWeightsFetcher),
-            url_fetch_options: UrlFetchOptions::from_env(),
+            url_fetch_options: context.url_fetch_options.clone(),
         })
     }
 
@@ -2550,12 +2551,21 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.weights_fetcher = fetcher;
     }
 
-    /// Replace the fetch options of this builder (default: [`UrlFetchOptions::from_env`]):
+    /// Replace the fetch options of this builder (default: the
+    /// [`RustNNOptions::url_fetch`](crate::mlcontextoptions::RustNNOptions::url_fetch) of the
+    /// context, or [`UrlFetchOptions::default`] for [`Self::new_uncompiled`]):
     /// worker threads, the bound on fetched bytes held in host memory, and the batch size in
-    /// which fetched data is bound to the device. The options are replaced as a whole.
-    /// rustnn extension.
+    /// which fetched data is bound to the device. The options are replaced as a whole: start
+    /// from a clone of [`Self::rustnn_url_fetch_options`] to keep the other values of the
+    /// context. rustnn extension.
     pub fn rustnn_set_url_fetch_options(&mut self, options: UrlFetchOptions) {
         self.url_fetch_options = options;
+    }
+
+    /// The fetch options of this builder: those of the context unless
+    /// [`Self::rustnn_set_url_fetch_options`] replaced them. rustnn extension.
+    pub fn rustnn_url_fetch_options(&self) -> &UrlFetchOptions {
+        &self.url_fetch_options
     }
 
     /// Scalar constant from a single value. Not implemented yet; use

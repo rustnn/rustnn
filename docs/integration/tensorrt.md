@@ -71,17 +71,21 @@ owns the rules. On this backend `build` runs these steps:
    constants that the converter bakes into the engine. Their values are needed for the engine
    cache key and to build the network. This fetch runs one constant after another on the
    calling thread.
-2. It starts worker threads (`UrlFetchOptions::threads`, `RUSTNN_WEIGHTS_FETCH_THREADS`) that
-   fetch the byte ranges of the remaining URL constants. `UrlFetchOptions::max_inflight_bytes`
-   (`RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES`), the byte bound, limits the fetched bytes that are
-   held in host memory and not yet refitted. It does not apply to the fetch of step 1.
+2. It starts worker threads (`UrlFetchOptions::threads`) that fetch the byte ranges of the
+   remaining URL constants. `UrlFetchOptions::max_inflight_bytes`, the byte bound, limits the
+   fetched bytes that are held in host memory and not yet refitted. It does not apply to the
+   fetch of step 1.
 3. It loads the engine from the engine cache, or on a miss builds it from a network in which
    the remaining constants are constant layers with null weights (placeholders). The fetch
    runs meanwhile. An engine built from placeholders has its own cache key, and that key
    contains no URL.
 4. It refits the engine from the fetched buffers: once at the end, or in batches that are
    freed after each refit when `max_inflight_bytes` or `UrlFetchOptions::bind_batch_bytes`
-   (`RUSTNN_WEIGHTS_BIND_BATCH_BYTES`) is set.
+   is set.
+
+The fetch options are set for a context with `RustNNOptions::url_fetch`; every builder of the
+context starts with them, and `rustnn_set_url_fetch_options` replaces them for one builder.
+No environment variable is read.
 
 `build` returns after all weights are bound. Without a byte bound the whole fetch can overlap
 the engine build. With a bound the workers fetch up to the bound during the build and continue
@@ -134,10 +138,6 @@ converter change because the converter source hash is part of the key.
 | `RUSTNN_TRTX_LOG_VERBOSITY` | TensorRT logger level: `internal_error`, `error`, `warning`, `info`, `verbose` |
 | `TRTX_JSON_DUMP_PATH` | Directory that receives a layer JSON dump per built engine |
 | `RUST_LOG` | rustnn logging; `debug` shows cache keys and refit details |
-
-The variables for URL constants (`RUSTNN_WEIGHTS_*` and the experiment switch
-`RUSTNN_TRTX_WEIGHTLESS_BUILD`) are listed in the
-[crate environment variable table](https://rustnn.github.io/rustnn/api/rustnn/#environment-variables).
 
 ## Testing
 

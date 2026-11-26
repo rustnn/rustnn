@@ -50,7 +50,7 @@ use rustnn::mlcontext::{
     MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor, RustNNOptions,
 };
 use rustnn::operator_enums::MLOperandDataType;
-use rustnn::weights::{DefaultWeightsFetcher, UrlFetchOptions, UrlRef, WeightsFetcher};
+use rustnn::weights::{DefaultWeightsFetcher, UrlRef, WeightsFetcher};
 
 /// Counts live and peak bytes of the Rust heap: the buffers rustnn and this program own.
 /// TensorRT and CUDA allocate outside of it; the OS counters below include them.
@@ -279,10 +279,6 @@ fn main() {
         serve(path, args.throttle_mib_s);
         return;
     }
-    if args.weightless_build {
-        // SAFETY: single-threaded at this point.
-        unsafe { std::env::set_var("RUSTNN_TRTX_WEIGHTLESS_BUILD", "1") };
-    }
     let width = layer_width(args.size_mib, args.layers);
     let layer_bytes = width * width * 4;
     let blob = args.blob.clone().unwrap_or_else(|| {
@@ -327,6 +323,18 @@ fn main() {
     let mut rustnn_options = RustNNOptions::default();
     rustnn_options.trtx.engine_caching = args.cache;
     rustnn_options.trtx.runtime_cache = args.runtime_cache;
+    rustnn_options.trtx.weightless_build = args.weightless_build;
+    if args.mode == Mode::Url {
+        if let Some(mib) = args.budget_mib {
+            rustnn_options.url_fetch.max_inflight_bytes = Some(mib << 20);
+        }
+        if let Some(mib) = args.batch_mib {
+            rustnn_options.url_fetch.bind_batch_bytes = Some(mib << 20);
+        }
+        if let Some(threads) = args.threads {
+            rustnn_options.url_fetch.threads = Some(threads);
+        }
+    }
     let options = MLContextOptions::new(MLPowerPreference::HighPerformance, true)
         .with_rustnn_backend_hint(Backend::Trtx)
         .with_rustnn_options(rustnn_options);
@@ -335,19 +343,6 @@ fn main() {
     let (context_ws, context_commit) = os_peak_memory();
 
     let mut builder = MLGraphBuilder::new(&mut context).unwrap();
-    if args.mode == Mode::Url {
-        let mut fetch = UrlFetchOptions::from_env();
-        if let Some(mib) = args.budget_mib {
-            fetch.max_inflight_bytes = Some(mib << 20);
-        }
-        if let Some(mib) = args.batch_mib {
-            fetch.bind_batch_bytes = Some(mib << 20);
-        }
-        if let Some(threads) = args.threads {
-            fetch.threads = Some(threads);
-        }
-        builder.rustnn_set_url_fetch_options(fetch);
-    }
     let vector = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, width as u64]);
     let matrix =
         MLOperandDescriptor::new(MLOperandDataType::Float32, vec![width as u64, width as u64]);

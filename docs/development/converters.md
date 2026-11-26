@@ -107,7 +107,7 @@ Rules that hold for every converter:
   name as an ordinary constant, and the backend refits it after the build. The backend passes
   the URL constants, whose bytes are not in `GraphInfo`
   (see [URL constants](https://rustnn.github.io/rustnn/integration/tensorrt/#url-constants-prototype)),
-  and with `RUSTNN_TRTX_WEIGHTLESS_BUILD=1` the refittable host-buffer constants as well. A
+  and with `TrtxOptions::weightless_build` the refittable host-buffer constants as well. A
   placeholder without a consumer gets no layer.
 - The baked constants (`gather_baked_constant_operand_ids`) cannot be placeholders, because
   their values are needed while the network is built: the lowering reads some of them and

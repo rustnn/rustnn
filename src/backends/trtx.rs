@@ -52,10 +52,6 @@ use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
 use crate::weights::{FetchStream, UrlConstants, spawn_fetch};
 
-/// Environment variable, experiment only: with the value `1` the network is built from
-/// placeholders for host-buffer constants too, which are then refitted from their buffers.
-pub const RUSTNN_TRTX_WEIGHTLESS_BUILD_ENV_VAR: &str = "RUSTNN_TRTX_WEIGHTLESS_BUILD";
-
 /// Reexport [trtx::dynamically_load_tensorrt] so RustNN users (like pywebnn) can hint to location
 /// of TensorRT library without adding trtx as dependency themselves
 pub use trtx::dynamically_load_tensorrt;
@@ -424,6 +420,8 @@ pub(crate) struct TrtxBuilder<'builder> {
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
+    /// `TrtxOptions::weightless_build`.
+    weightless_build: bool,
 }
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -619,10 +617,11 @@ impl<'context> TrtxBuilder<'context> {
                 urls.options.effective_max_inflight_bytes(),
             ));
         }
-        // Experiment switch: build the network without the bytes of host-buffer constants
-        // as well (they stay in `graph` and are refitted as usual). It separates the effect
-        // of the weightless build from the effect of pulling the bytes.
-        if std::env::var_os(RUSTNN_TRTX_WEIGHTLESS_BUILD_ENV_VAR).is_some_and(|v| v == "1") {
+        // Experiment switch (`TrtxOptions::weightless_build`): build the network without the
+        // bytes of host-buffer constants as well (they stay in `graph` and are refitted as
+        // usual). It separates the effect of the weightless build from the effect of pulling
+        // the bytes.
+        if self.weightless_build {
             for &id in graph.constant_operand_ids_to_handles.keys() {
                 if !non_refittable_constants.contains(&id) && !unused_constants.contains(&id) {
                     placeholders.insert(id);
@@ -967,6 +966,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
+            weightless_build: self.options.weightless_build,
         }))
     }
 

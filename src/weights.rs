@@ -47,24 +47,16 @@ use serde::{Deserialize, Serialize};
 use crate::error::GraphBuilderError;
 use crate::graph::{ConstantData, GraphInfo};
 
-/// Environment variable: number of worker threads that fetch URL constants (default 4).
-pub const RUSTNN_WEIGHTS_FETCH_THREADS_ENV_VAR: &str = "RUSTNN_WEIGHTS_FETCH_THREADS";
-/// Environment variable: upper bound in bytes for fetched weights that are held in host memory
-/// and not yet handed to the device (default: unlimited, or twice the bind batch when that is
-/// set). A single constant larger than the bound is still fetched, alone. Only TensorRT-RTX
-/// applies the bound.
-pub const RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES_ENV_VAR: &str = "RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES";
-/// Environment variable: hand fetched weights to the device whenever this many bytes are held
-/// in host memory, then free them (default: half of the in-flight bound when that is set,
-/// otherwise once, after everything was fetched). Only TensorRT-RTX uses it.
-pub const RUSTNN_WEIGHTS_BIND_BATCH_BYTES_ENV_VAR: &str = "RUSTNN_WEIGHTS_BIND_BATCH_BYTES";
-
 /// How the URL constants of one graph are fetched and bound.
 ///
-/// [`UrlFetchOptions::from_env`] is the default of every builder.
+/// Set them for a context with
+/// [`RustNNOptions::url_fetch`](crate::mlcontextoptions::RustNNOptions::url_fetch): every
+/// builder created from the context starts with these options.
 /// [`MLGraphBuilder::rustnn_set_url_fetch_options`](crate::mlgraphbuilder::MLGraphBuilder::rustnn_set_url_fetch_options)
-/// replaces all of it: start from `from_env()` to keep the environment values of the fields
-/// that are not set, or from `default()` to ignore the environment.
+/// replaces all of them for one builder; start from a clone of
+/// [`MLGraphBuilder::rustnn_url_fetch_options`](crate::mlgraphbuilder::MLGraphBuilder::rustnn_url_fetch_options)
+/// to keep the other values of the context. The environment is not read. A value of zero
+/// means the same as `None`, except for `threads`, where it means one thread.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct UrlFetchOptions {
@@ -84,22 +76,12 @@ pub struct UrlFetchOptions {
     /// Bind fetched data to the device whenever this many bytes are held, then free it.
     /// `None` is half of `max_inflight_bytes` when that is set, otherwise one bind at the end.
     /// A batch is at most half of `max_inflight_bytes`; a batch without `max_inflight_bytes`
-    /// implies a bound of twice the batch.
+    /// implies a bound of twice the batch. Only TensorRT-RTX uses it; the other backends and
+    /// `finish_graph_info` bind once.
     pub bind_batch_bytes: Option<usize>,
 }
 
 impl UrlFetchOptions {
-    /// Options from `RUSTNN_WEIGHTS_FETCH_THREADS`, `RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES` and
-    /// `RUSTNN_WEIGHTS_BIND_BATCH_BYTES`; unset, unparsable and zero values mean `None`.
-    pub fn from_env() -> Self {
-        let read = |name| env_usize(name).filter(|&n| n > 0);
-        Self {
-            threads: read(RUSTNN_WEIGHTS_FETCH_THREADS_ENV_VAR),
-            max_inflight_bytes: read(RUSTNN_WEIGHTS_MAX_INFLIGHT_BYTES_ENV_VAR),
-            bind_batch_bytes: read(RUSTNN_WEIGHTS_BIND_BATCH_BYTES_ENV_VAR),
-        }
-    }
-
     /// Set the number of fetch threads.
     pub fn with_threads(mut self, threads: usize) -> Self {
         self.threads = Some(threads);
@@ -124,7 +106,10 @@ impl UrlFetchOptions {
     /// so a larger batch would never fill.
     #[cfg_attr(not(feature = "trtx-runtime"), allow(dead_code))]
     pub(crate) fn effective_bind_batch_bytes(&self) -> usize {
-        let half_bound = self.max_inflight_bytes.map(|b| (b / 2).max(1));
+        let half_bound = self
+            .max_inflight_bytes
+            .filter(|&n| n > 0)
+            .map(|b| (b / 2).max(1));
         match (self.bind_batch_bytes.filter(|&n| n > 0), half_bound) {
             (Some(batch), Some(half)) => batch.min(half),
             (Some(batch), None) => batch,
@@ -529,10 +514,6 @@ impl Drop for FetchStream {
     }
 }
 
-fn env_usize(name: &str) -> Option<usize> {
-    std::env::var(name).ok()?.trim().parse().ok()
-}
-
 /// Fetch `operands` on worker threads, ordered by `(url, offset)` so that ranges of one
 /// resource are requested front to back.
 ///
@@ -844,6 +825,18 @@ mod tests {
         assert_eq!(options.effective_bind_batch_bytes(), 50);
         // A batch alone implies a bound, otherwise nothing would be freed early.
         let options = UrlFetchOptions::default().with_bind_batch_bytes(64);
+        assert_eq!(options.effective_bind_batch_bytes(), 64);
+        assert_eq!(options.effective_max_inflight_bytes(), 128);
+        // Zero means the same as `None` for both byte values.
+        let options = UrlFetchOptions::default().with_max_inflight_bytes(0);
+        assert_eq!(options.effective_bind_batch_bytes(), usize::MAX);
+        assert_eq!(options.effective_max_inflight_bytes(), usize::MAX);
+        let options = UrlFetchOptions::default().with_bind_batch_bytes(0);
+        assert_eq!(options.effective_bind_batch_bytes(), usize::MAX);
+        assert_eq!(options.effective_max_inflight_bytes(), usize::MAX);
+        let options = UrlFetchOptions::default()
+            .with_max_inflight_bytes(0)
+            .with_bind_batch_bytes(64);
         assert_eq!(options.effective_bind_batch_bytes(), 64);
         assert_eq!(options.effective_max_inflight_bytes(), 128);
     }

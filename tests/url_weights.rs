@@ -333,6 +333,47 @@ fn fallback_backend_fetches_everything_and_matches_pointer_constants() {
     assert_eq!(fetcher.calls.load(Ordering::SeqCst), 4);
 }
 
+/// Records how many fetches ran at the same time.
+#[derive(Debug, Default)]
+struct OverlapFetcher {
+    running: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl WeightsFetcher for OverlapFetcher {
+    fn fetch_into(&self, source: &UrlRef, dst: &mut [u8]) -> io::Result<()> {
+        let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(running, Ordering::SeqCst);
+        // Long enough for the other workers to start a fetch, if there are any.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let result = DefaultWeightsFetcher.fetch_into(source, dst);
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+}
+
+#[test]
+fn context_options_are_the_fetch_options_of_its_builders() {
+    // The default is four fetch threads, one for each constant of this graph. With one
+    // thread from `RustNNOptions::url_fetch` no two fetches can overlap.
+    let mut options = RustNNOptions::default();
+    options.url_fetch.threads = Some(1);
+    let Some(mut context) = context(Backend::BurnCpu, options) else {
+        return;
+    };
+    {
+        let builder = MLGraphBuilder::new(&mut context).unwrap();
+        assert_eq!(builder.rustnn_url_fetch_options().threads, Some(1));
+    }
+    let (_dir, path) = temp_blob();
+    let fetcher = Arc::new(OverlapFetcher::default());
+    run_conv_mlp(&mut context, Source::Url(file_url(&path)), 5, &path, |b| {
+        b.rustnn_set_weights_fetcher(fetcher.clone())
+    })
+    .unwrap();
+    assert_eq!(fetcher.peak.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn missing_resource_fails_the_build_with_operand_and_url() {
     let Some(mut context) = context(Backend::BurnCpu, RustNNOptions::default()) else {

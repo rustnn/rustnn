@@ -648,6 +648,8 @@ pub struct MLContext<'context> {
     pub(crate) device: BackendDevice,
     pub(crate) bypass_allowed_data_types_checks: bool,
     pub(crate) allow_int4_uint4: bool,
+    /// Fetch options that builders of this context start with (`RustNNOptions::url_fetch`).
+    pub(crate) url_fetch_options: crate::weights::UrlFetchOptions,
 }
 
 impl<'context> MLContext<'context> {
@@ -709,6 +711,7 @@ impl<'context> MLContext<'context> {
             device,
             bypass_allowed_data_types_checks: options.bypass_allowed_data_types_checks,
             allow_int4_uint4: options.allow_int4_uint4,
+            url_fetch_options: options.rustnn_options.url_fetch.clone(),
         })
     }
 
@@ -729,6 +732,7 @@ impl<'context> MLContext<'context> {
             device,
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
         })
     }
     /// Whether the selected device is a GPU or NPU rather than a CPU.
@@ -975,6 +979,7 @@ mod test {
         let mut context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             // All mutation methods panic, so reaching it would fail this test.
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
@@ -1029,6 +1034,7 @@ mod test {
         let mut context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
@@ -1052,6 +1058,7 @@ mod test {
         let context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
