@@ -210,9 +210,9 @@ fn main() {
     let backends = WptBackend::selected();
     if backends.is_empty() {
         eprintln!(
-            "No WPT backends available (enable onnx-runtime, trtx-runtime, coreml-runtime, ...)."
+            "No WPT backends available: a backend named by WPT_BACKEND reports its error above; \
+             otherwise build with a backend feature (onnx-runtime, trtx-runtime, litert-runtime, ...)."
         );
-        eprintln!("Set WPT_BACKEND=onnx or trtx to limit registered trials.");
         std::process::exit(2);
     }
     let backend_prefixes: Vec<&str> = backends.iter().map(|b| b.trial_prefix()).collect();
