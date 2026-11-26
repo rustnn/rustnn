@@ -84,7 +84,7 @@ impl WptBackend {
                 MLContextOptions::new(MLPowerPreference::Default, false)
                     .with_rustnn_backend_hint(Backend::Litert),
             ),
-            // CoreML (macOS only). Filtered out by `is_available` unless the binary is built
+            // CoreML (macOS only). Filtered out by `probe` unless the binary is built
             // with `coreml-runtime` on macOS, so this is a no-op on other platforms/builds.
             // `accelerated = false` picks CoreML's CPU device for deterministic results.
             Self::new(
@@ -93,7 +93,7 @@ impl WptBackend {
                     .with_rustnn_backend_hint(Backend::Coreml)
                     .with_rustnn_options(coreml),
             ),
-            // CANN/HiAI (Huawei Ascend NPU). Filtered out by `is_available` unless the
+            // CANN/HiAI (Huawei Ascend NPU). Filtered out by `probe` unless the
             // binary is built with `cann-runtime`; availability is still probed at startup
             // (requires a device).
             Self::new(
@@ -104,9 +104,10 @@ impl WptBackend {
         ]
     }
 
-    /// Whether [`MLContext::create`] succeeds for this backend's options.
-    pub fn is_available(&self) -> bool {
-        MLContext::create(self.context_options()).is_ok()
+    /// Creates an [`MLContext`] for this backend's options; the error says why the backend
+    /// cannot run (not compiled in, or its runtime failed to start).
+    pub fn probe(&self) -> Result<(), rustnn::error::Error> {
+        MLContext::create(self.context_options()).map(drop)
     }
 
     pub fn parse_name(s: &str) -> Option<Self> {
@@ -124,21 +125,21 @@ impl WptBackend {
     }
 
     /// Backends to register as trials. Honors `WPT_BACKEND` when set; only returns backends
-    /// that pass [`Self::is_available`].
+    /// that pass [`Self::probe`].
     pub fn selected() -> Vec<Self> {
-        let candidates = if let Ok(raw) = std::env::var("WPT_BACKEND") {
-            match Self::parse_name(&raw) {
-                Some(backend) => vec![backend],
+        let requested = std::env::var("WPT_BACKEND")
+            .ok()
+            .and_then(|raw| match Self::parse_name(&raw) {
+                Some(backend) => Some(backend),
                 None => {
                     eprintln!(
                         "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, coreml, litert, cann or burn-cpu); using all backends"
                     );
-                    Self::all()
+                    None
                 }
-            }
-        } else {
-            Self::all()
-        };
+            });
+        let explicit = requested.is_some();
+        let candidates = requested.map_or_else(Self::all, |backend| vec![backend]);
 
         let mut available = Vec::new();
         for mut backend in candidates {
@@ -155,13 +156,18 @@ impl WptBackend {
                 backend = backend.with_coreml_device(device_type);
                 eprintln!("[WPT] CoreML requested device: {requested} (not measured placement)");
             }
-            if backend.is_available() {
-                available.push(backend);
-            } else {
-                log::warn!(
-                    "[WPT] skipping unavailable backend: {}",
+            match backend.probe() {
+                Ok(()) => available.push(backend),
+                // A backend the run asked for by name must say why it cannot start; without
+                // `WPT_BACKEND`, backends that are not compiled in are expected to drop out.
+                Err(error) if explicit => eprintln!(
+                    "[WPT] backend {} is unavailable: {error}",
                     backend.trial_prefix()
-                );
+                ),
+                Err(error) => log::warn!(
+                    "[WPT] skipping unavailable backend {}: {error}",
+                    backend.trial_prefix()
+                ),
             }
         }
         available
