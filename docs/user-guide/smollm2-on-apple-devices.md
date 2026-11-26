@@ -134,14 +134,16 @@ Mac's tokens. Its memory is tight. A watch app was granted 299 MiB when measured
 | Peak during the build | below the load peak | 486 MiB |
 | While decoding | 29 MiB | 179 MiB |
 
-The bundle holds 142 MB of weights. The load peak is the `.webnn` loader holding the weights
-file and the per-tensor constants at the same moment. The build no longer adds to it: the
+The bundle holds 142 MB of weights. In these runs the load peak was the `.webnn` loader holding
+the weights file and the per-tensor constants at the same moment. The loader now reads the
+weights one tensor at a time, so the file is no longer in memory next to the constants; the
+table predates that change and has not been measured again. The build no longer adds to it: the
 CoreML backend converts a large graph in place and assembles its weight blob in a temporary
 file ([converter notes](../development/converters.md)). Core ML maps its weights file, which
 is why decoding needs 29 MiB. macOS and iOS keep freed heap pages in the process, so their
 later figures stay high; watchOS returns them. One of three full-model runs on the watch
-ended without a receipt, which the 7 MiB of headroom would explain; a loader that reads one
-tensor at a time is the remaining step.
+ended without a receipt, which the 7 MiB of headroom would explain. The per-tensor loader is
+the change meant to widen that headroom.
 
 ## Reference runs
 
