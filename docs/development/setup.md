@@ -78,6 +78,7 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `wpt-sync-onnx`, `wpt-sync-trtx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-cann` | Regenerate snapshots and expected-failure lists |
 | `webnn-chromedriver`, `test-webnn-wpt-chrome`, `test-webnn-wpt-chrome-headless` | Browser WebNN graph-build tests in Chrome; see [Browser WebNN](../integration/webnn-browser.md) |
 | `docs-api` | rustdoc with `-D warnings` |
+| `docs-api-open` | Build Rust API docs and open them in a browser |
 | `docs-capi` | Regenerate `rustnn.h` from `src/capi.rs` and build the C/C++ Doxygen reference into `target/doxygen/html/`; see [C and C++ API](../reference/c-api.md) |
 | `docs-build`, `docs-serve`, `ci-docs`, `docs-clean` | MkDocs site into `site/` with the Doxygen reference at `site/c-api/`, live preview, strict mode as CI runs it, remove the site |
 | `docs-backend-ops`, `docs-backend-ops-check` | Regenerate the operator support report; check it for drift |

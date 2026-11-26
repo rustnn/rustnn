@@ -108,7 +108,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 
 .PHONY: build test fmt fmt-check lint clean clean-all help \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
-	docs-serve docs-build docs-clean ci-docs docs-api docs-capi docs-backend-ops docs-backend-ops-check \
+	docs-serve docs-build docs-clean ci-docs docs-api docs-api-open docs-capi docs-backend-ops docs-backend-ops-check \
 	fetch-webnn-spec generate-operation-data-types \
 	fetch-wpt require-wpt-cache test-wpt test-wpt-trtx test-wpt-litert test-wpt-coreml \
 	test-wpt-coreml-report build-coreml test-coreml benchmark-coreml-kv test-wpt-op test-wpt-report test-wpt-cann \
@@ -466,8 +466,11 @@ docs-clean:
 DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,coreml-runtime,burn-cpu-runtime,dynamic-inputs
 docs-api:
 	@echo "Building Rust API documentation..."
-	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --no-deps --lib --features $(DOCS_API_FEATURES)
+	RUSTDOCFLAGS="-D warnings --cfg docsrs" $(CARGO) +nightly doc --no-deps --lib --features $(DOCS_API_FEATURES) $(DOCS_API_ARGS)
 	@echo "[OK] Rust API documentation generated in target/doc/rustnn/"
+
+docs-api-open: DOCS_API_ARGS += --open
+docs-api-open: docs-api
 
 # Generate directly from the C ABI source; no backend build or cargo-c install needed.
 docs-capi:
@@ -564,6 +567,7 @@ help:
 	@echo "  docs-build         - Build static documentation site"
 	@echo "  ci-docs            - Build documentation in strict mode (CI)"
 	@echo "  docs-api           - Build Rust API docs (rustdoc, warnings are errors)"
+	@echo "  docs-api-open      - Build Rust API docs and open them in a browser"
 	@echo "  docs-capi          - Generate rustnn.h and build C/C++ API docs with Doxygen"
 	@echo "  docs-clean         - Clean documentation artifacts"
 	@echo "  docs-backend-ops   - Generate backend operator support report"
