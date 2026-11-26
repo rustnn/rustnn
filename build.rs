@@ -247,6 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[
             "src/converters/coreml_mlprogram.rs",
             "src/converters/coreml_mlprogram/precision.rs",
+            "src/converters/coreml_blockwise.rs",
             "src/converters/coreml_constant_fold.rs",
             "src/converters/coreml_names.rs",
             "src/converters/coreml_state.rs",
