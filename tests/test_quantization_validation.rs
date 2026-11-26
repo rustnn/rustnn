@@ -79,7 +79,7 @@ fn builder_result_with_options(
             builder.input(
                 operand.name.as_ref().unwrap(),
                 &MLOperandDescriptor::new(
-                    MLOperandDataType::try_from(operand.descriptor.data_type).unwrap(),
+                    operand.descriptor.data_type,
                     operand
                         .descriptor
                         .static_or_max_shape()
@@ -91,9 +91,9 @@ fn builder_result_with_options(
         );
     }
     let result = if matches!(graph.operations[0], Operation::QuantizeLinear { .. }) {
-        builder.quantize_linear_with_zeropoint(inputs[0], inputs[1], inputs[2])?
+        builder.quantize_linear(inputs[0], inputs[1], inputs[2])?
     } else {
-        builder.dequantize_linear_with_zeropoint(inputs[0], inputs[1], inputs[2])?
+        builder.dequantize_linear(inputs[0], inputs[1], inputs[2])?
     };
     let mut outputs = MLNamedOperands::new();
     outputs.insert("result", result);
@@ -299,7 +299,7 @@ fn quantization_preserves_scalar_per_tensor_per_axis_and_blockwise_parameters() 
 }
 
 #[test]
-fn omitted_zero_point_preserves_the_existing_builder_extension() {
+fn explicit_zero_point_preserves_scale_output_type() {
     let mut builder = MLGraphBuilder::new_uncompiled();
     let input = builder
         .input(
@@ -313,7 +313,13 @@ fn omitted_zero_point_preserves_the_existing_builder_extension() {
             &MLOperandDescriptor::new(MLOperandDataType::Float16, vec![1]),
         )
         .unwrap();
-    let result = builder.dequantize_linear(input, scale).unwrap();
+    let zero_point = builder
+        .input(
+            "zero_point",
+            &MLOperandDescriptor::new(MLOperandDataType::Int8, vec![1]),
+        )
+        .unwrap();
+    let result = builder.dequantize_linear(input, scale, zero_point).unwrap();
     assert_eq!(
         builder.rustnn_operand_data_type(result).unwrap(),
         MLOperandDataType::Float16
@@ -343,7 +349,7 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
         .unwrap();
     assert!(
         builder
-            .quantize_linear_with_zeropoint(input, scalar_scale, scalar_zero)
+            .quantize_linear(input, scalar_scale, scalar_zero)
             .is_err()
     );
     let scale = builder
@@ -358,9 +364,7 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
             &MLOperandDescriptor::new(MLOperandDataType::Int8, vec![1, 1]),
         )
         .unwrap();
-    let result = builder
-        .quantize_linear_with_zeropoint(input, scale, zero)
-        .unwrap();
+    let result = builder.quantize_linear(input, scale, zero).unwrap();
     let mut outputs = MLNamedOperands::new();
     outputs.insert("result", result);
     let graph = builder.finish_graph_info(&outputs).unwrap();

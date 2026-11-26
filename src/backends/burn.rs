@@ -812,9 +812,7 @@ mod tests {
                             vec![zero_point],
                         )
                         .unwrap();
-                    let float = builder
-                        .dequantize_linear_with_zeropoint(input, scale, zero_point)
-                        .unwrap();
+                    let float = builder.dequantize_linear(input, scale, zero_point).unwrap();
                     let packed_output = builder.identity(input).unwrap();
                     let mut graph = builder
                         .build(&MLNamedOperands::from([
@@ -912,11 +910,9 @@ mod tests {
                 let zero_point = builder
                     .constant_from_bytes(&MLOperandDescriptor::new(data_type, vec![1]), vec![0xf0])
                     .unwrap();
-                let quantized = builder
-                    .quantize_linear_with_zeropoint(input, scale, zero_point)
-                    .unwrap();
+                let quantized = builder.quantize_linear(input, scale, zero_point).unwrap();
                 let dequantized = builder
-                    .dequantize_linear_with_zeropoint(quantized, scale, zero_point)
+                    .dequantize_linear(quantized, scale, zero_point)
                     .unwrap();
                 let mut graph = builder
                     .build(&MLNamedOperands::from([

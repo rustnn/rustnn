@@ -1226,53 +1226,46 @@ macro_rules! impl_ternary_op {
     };
 }
 
-/// Two required operands plus an optional third (`quantizeLinear` / `dequantizeLinear`).
-macro_rules! impl_ternary_optional_op {
+/// Three required operands with an optional zero point in the internal representation.
+macro_rules! impl_quantization_op {
     (
         $(#[$meta:meta])*
         $fn_name:ident,
-        $fn_with_three:ident,
         $fn_with_options:ident,
         $op:ident,
         $option_type:ident,
         $arg1:ident,
         $arg2:ident,
-        $optional:ident
+        $arg3:ident
     ) => {
         $(#[$meta])*
-        pub fn $fn_name(&mut self, $arg1: MLOperand, $arg2: MLOperand) -> Result<MLOperand> {
-            self.$fn_with_options($arg1, $arg2, None, $option_type::default())
-        }
-
-        $(#[$meta])*
-        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with the optional `", stringify!($optional), "` operand.")]
-        pub fn $fn_with_three(
+        pub fn $fn_name(
             &mut self,
             $arg1: MLOperand,
             $arg2: MLOperand,
-            $optional: MLOperand,
+            $arg3: MLOperand,
         ) -> Result<MLOperand> {
-            self.$fn_with_options($arg1, $arg2, Some($optional), $option_type::default())
+            self.$fn_with_options($arg1, $arg2, $arg3, $option_type::default())
         }
 
         $(#[$meta])*
-        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with an optional `", stringify!($optional), "` operand and explicit [`", stringify!($option_type), "`].")]
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
             $arg2: MLOperand,
-            $optional: Option<MLOperand>,
+            $arg3: MLOperand,
             options: $option_type,
         ) -> Result<MLOperand> {
-            self.ternary_optional_operation(
+            self.ternary_operation(
                 $arg1,
                 $arg2,
-                $optional,
+                $arg3,
                 options,
-                |a, b, optional, output_id, options| Operation::$op {
+                |a, b, c, output_id, options| Operation::$op {
                     $arg1: a,
                     $arg2: b,
-                    $optional: optional,
+                    $arg3: Some(c),
                     options,
                     outputs: vec![output_id],
                 },
@@ -2492,29 +2485,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         ))
     }
 
-    fn ternary_optional_operation<Options>(
-        &mut self,
-        arg1: MLOperand,
-        arg2: MLOperand,
-        optional: Option<MLOperand>,
-        options: Options,
-        build: impl FnOnce(u32, u32, Option<u32>, u32, Option<Options>) -> Operation,
-    ) -> Result<MLOperand> {
-        let output_id = self
-            .recorder
-            .as_mut()
-            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
-            .operands
-            .len() as u32;
-        self.add_single_output_operation(build(
-            arg1.id as u32,
-            arg2.id as u32,
-            optional.map(|o| o.id as u32),
-            output_id,
-            Some(options),
-        ))
-    }
-
     impl_binary_op!(
         /// Element-wise addition with broadcasting.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
@@ -2711,11 +2681,10 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         indices,
         updates
     );
-    impl_ternary_optional_op!(
-        /// Quantizes `input` with `scale` and an optional `zero_point` to the zero point data type (default `uint8`).
+    impl_quantization_op!(
+        /// Quantizes `input` with required `scale` and `zero_point` operands to the zero point data type.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear>
         quantize_linear,
-        quantize_linear_with_zeropoint,
         quantize_linear_with_options,
         QuantizeLinear,
         MLOperatorOptions,
@@ -2723,11 +2692,10 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         scale,
         zero_point
     );
-    impl_ternary_optional_op!(
-        /// Dequantizes `input` with `scale` and an optional `zero_point` to the scale data type.
+    impl_quantization_op!(
+        /// Dequantizes `input` with required `scale` and `zero_point` operands to the scale data type.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear>
         dequantize_linear,
-        dequantize_linear_with_zeropoint,
         dequantize_linear_with_options,
         DequantizeLinear,
         MLOperatorOptions,
@@ -3768,18 +3736,14 @@ mod test {
         let zero_point = builder
             .constant_from_slice(&zero_point_desc, &[128u8])
             .unwrap();
-        let q = builder
-            .quantize_linear_with_zeropoint(x, scale, zero_point)
-            .unwrap();
+        let q = builder.quantize_linear(x, scale, zero_point).unwrap();
         assert_eq!(
             builder.rustnn_operand_data_type(q).unwrap(),
             crate::operator_enums::MLOperandDataType::Uint8
         );
         assert_eq!(builder.rustnn_operand_shape(q).unwrap(), float_desc.shape());
 
-        let dq = builder
-            .dequantize_linear_with_zeropoint(q, scale, zero_point)
-            .unwrap();
+        let dq = builder.dequantize_linear(q, scale, zero_point).unwrap();
         assert_eq!(
             builder.rustnn_operand_data_type(dq).unwrap(),
             crate::operator_enums::MLOperandDataType::Float32
@@ -3876,8 +3840,20 @@ mod test {
             .constant_from_bytes(&int4_desc, int4_bytes.clone())
             .unwrap();
         let scale = builder.constant_from_slice(&scale_desc, &[1.0f32]).unwrap();
-        let uint4_float = builder.dequantize_linear(uint4, scale).unwrap();
-        let int4_float = builder.dequantize_linear(int4, scale).unwrap();
+        let uint4_zero = builder
+            .constant_from_bytes(
+                &MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Uint4, vec![1]),
+                vec![0],
+            )
+            .unwrap();
+        let int4_zero = builder
+            .constant_from_bytes(
+                &MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Int4, vec![1]),
+                vec![0],
+            )
+            .unwrap();
+        let uint4_float = builder.dequantize_linear(uint4, scale, uint4_zero).unwrap();
+        let int4_float = builder.dequantize_linear(int4, scale, int4_zero).unwrap();
         let output = builder.concat(&[uint4_float, int4_float], 0).unwrap();
         let mut named_outputs = MLNamedOperands::new();
         named_outputs.insert("output", output);

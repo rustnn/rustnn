@@ -643,20 +643,20 @@ public:
   }
 
   MLOperand quantizeLinear(const MLOperand &input, const MLOperand &scale,
-                           const MLOperand *zero_point = nullptr) {
+                           const MLOperand &zero_point) {
     RustnnOperand *output = nullptr;
     check(rustnn_graph_builder_quantize_linear(
         value_, input.value_, scale.value_,
-        zero_point != nullptr ? zero_point->value_ : nullptr, &output));
+        zero_point.value_, &output));
     return MLOperand(output);
   }
 
   MLOperand dequantizeLinear(const MLOperand &input, const MLOperand &scale,
-                             const MLOperand *zero_point = nullptr) {
+                             const MLOperand &zero_point) {
     RustnnOperand *output = nullptr;
     check(rustnn_graph_builder_dequantize_linear(
         value_, input.value_, scale.value_,
-        zero_point != nullptr ? zero_point->value_ : nullptr, &output));
+        zero_point.value_, &output));
     return MLOperand(output);
   }
 

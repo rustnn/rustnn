@@ -3900,6 +3900,8 @@ pub unsafe extern "C" fn rustnn_graph_builder_concat(
 
 /// Apply the quantize linear operation using [MLGraphBuilder].
 ///
+/// `input`, `scale`, and `zero_point` are required operand pointers.
+///
 /// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_quantize_linear(
@@ -3927,18 +3929,18 @@ pub unsafe extern "C" fn rustnn_graph_builder_quantize_linear(
             Err(s) => return s,
         };
         *output = ptr::null_mut();
-        let result = if zero_point.is_null() {
-            builder.0.quantize_linear(input, scale)
-        } else {
-            builder
-                .0
-                .quantize_linear_with_zeropoint(input, scale, unsafe { (*zero_point).0 })
+        let zero_point = match unsafe { required_ref(zero_point, "zero_point") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
         };
+        let result = builder.0.quantize_linear(input, scale, zero_point);
         return_operand(result, output)
     })
 }
 
 /// Apply the dequantize linear operation using [MLGraphBuilder].
+///
+/// `input`, `scale`, and `zero_point` are required operand pointers.
 ///
 /// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear).
 #[unsafe(no_mangle)]
@@ -3967,13 +3969,11 @@ pub unsafe extern "C" fn rustnn_graph_builder_dequantize_linear(
             Err(s) => return s,
         };
         *output = ptr::null_mut();
-        let result = if zero_point.is_null() {
-            builder.0.dequantize_linear(input, scale)
-        } else {
-            builder
-                .0
-                .dequantize_linear_with_zeropoint(input, scale, unsafe { (*zero_point).0 })
+        let zero_point = match unsafe { required_ref(zero_point, "zero_point") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
         };
+        let result = builder.0.dequantize_linear(input, scale, zero_point);
         return_operand(result, output)
     })
 }

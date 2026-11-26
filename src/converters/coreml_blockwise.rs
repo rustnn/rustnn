@@ -1987,9 +1987,7 @@ mod tests {
         let data = constant(&mut builder, DataType::Uint8, &[4, 8], stored_bytes(4, 8));
         let scale = float_constant(&mut builder, DataType::Float32, &[4, 2], &scale_values(8));
         let zero_point = constant(&mut builder, DataType::Uint8, &[4, 2], vec![128; 8]);
-        let weight = builder
-            .dequantize_linear_with_zeropoint(data, scale, zero_point)
-            .unwrap();
+        let weight = builder.dequantize_linear(data, scale, zero_point).unwrap();
         let graph = finish(builder, weight);
         assert!(find_chains(&graph).is_empty());
         assert!(lower(&graph).of_type(BLOCKWISE).is_empty());
