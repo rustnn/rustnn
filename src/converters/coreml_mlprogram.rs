@@ -38,6 +38,7 @@ use crate::protos::coreml::mil_spec::{
 };
 use crate::protos::coreml::specification::Model;
 use prost::Message;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
@@ -249,6 +250,46 @@ fn constant_copies(
         debug_assert_eq!(operand.descriptor.data_type, source.descriptor.data_type);
     }
     Ok(copies)
+}
+
+/// The constant rewrites both conversions run before lowering. A borrowed graph is cloned
+/// only when a rewrite applies; an owned one is rewritten in place.
+///
+/// Transposes, reshapes and casts of constants fold into new constants first, for both
+/// float16 lowerings: the Neural Engine admits `matmul(x, const)` but not
+/// `matmul(x, transpose(const))`, and the literal lowering would also transpose the weight
+/// on every dispatch. Then blockwise-quantized weights stay quantized: each constant
+/// dequantization chain becomes one `dequantizeLinear` that lowers to a compressed
+/// constant. The exact float16 lowering of a graph with float16 operands is excluded: in
+/// its precision pipeline the compressed constant returns +0 where the literal chain
+/// returns -0 (a zero difference, or a zero scale, with a negative sign). Without a float16
+/// operand the exact lowering is the native one and takes the rewrite too.
+fn rewrite_constants(
+    mut graph: Cow<'_, GraphInfo>,
+    exact: bool,
+) -> (
+    Cow<'_, GraphInfo>,
+    super::coreml_blockwise::BlockwiseConstants,
+) {
+    if super::coreml_constant_fold::has_candidate(&graph) {
+        super::coreml_constant_fold::fold_constant_views_in_place(graph.to_mut());
+    }
+    let keep_literal_chains = exact
+        && graph
+            .operands
+            .iter()
+            .any(|operand| operand.descriptor.data_type == DataType::Float16);
+    let chains = if keep_literal_chains {
+        Vec::new()
+    } else {
+        super::coreml_blockwise::find_chains(&graph)
+    };
+    let blockwise = if chains.is_empty() {
+        Default::default()
+    } else {
+        super::coreml_blockwise::apply(graph.to_mut(), chains)
+    };
+    (graph, blockwise)
 }
 
 impl CoremlMlProgramConverter {
@@ -12924,36 +12965,10 @@ impl CoremlMlProgramConverter {
         if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
-        // Fold transposes, reshapes and casts of constants into new constants first, for
-        // both float16 lowerings: the Neural Engine admits `matmul(x, const)` but not
-        // `matmul(x, transpose(const))`, and the literal lowering would also transpose the
-        // weight on every dispatch.
-        let mut folded = super::coreml_constant_fold::fold_constant_views(graph_info);
-        // Then keep blockwise-quantized weights quantized: each constant dequantization
-        // chain becomes one `dequantizeLinear` that lowers to a compressed constant. The
-        // exact float16 lowering of a graph with float16 operands is excluded: in its
-        // precision pipeline the compressed constant returns +0 where the literal chain
-        // returns -0 (a zero difference, or a zero scale, with a negative sign). Without a
-        // float16 operand the exact lowering is the native one and takes the rewrite too.
         let exact = precision == crate::mlcontextoptions::CoremlFloat16Precision::Exact;
-        let chains = if exact
-            && graph_info
-                .operands
-                .iter()
-                .any(|operand| operand.descriptor.data_type == DataType::Float16)
-        {
-            Vec::new()
-        } else {
-            super::coreml_blockwise::find_chains(folded.as_ref().unwrap_or(graph_info))
-        };
-        let blockwise = if chains.is_empty() {
-            Default::default()
-        } else {
-            super::coreml_blockwise::apply(folded.get_or_insert_with(|| graph_info.clone()), chains)
-        };
-        let graph_info = folded.as_ref().unwrap_or(graph_info);
+        let (graph_info, blockwise) = rewrite_constants(Cow::Borrowed(graph_info), exact);
         let (data, weights) = self.lower_prepared(
-            graph_info,
+            &graph_info,
             blockwise,
             exact,
             pairs,
@@ -12985,23 +13000,10 @@ impl CoremlMlProgramConverter {
         if !crate::graph::dynamic_inputs_enabled() && graph.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
-        super::coreml_constant_fold::fold_constant_views_in_place(graph);
         let exact = precision == crate::mlcontextoptions::CoremlFloat16Precision::Exact;
-        let chains = if exact
-            && graph
-                .operands
-                .iter()
-                .any(|operand| operand.descriptor.data_type == DataType::Float16)
-        {
-            Vec::new()
-        } else {
-            super::coreml_blockwise::find_chains(graph)
-        };
-        let blockwise = if chains.is_empty() {
-            Default::default()
-        } else {
-            super::coreml_blockwise::apply(graph, chains)
-        };
+        // `GraphInfo::default()` holds no allocation; the graph moves out and back.
+        let (rewritten, blockwise) = rewrite_constants(Cow::Owned(std::mem::take(graph)), exact);
+        *graph = rewritten.into_owned();
         let weight_builder = super::WeightFileBuilder::file_backed().unwrap_or_else(|error| {
             log::debug!("CoreML weight file stays in memory: {error}");
             super::WeightFileBuilder::new()
