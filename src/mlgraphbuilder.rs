@@ -3513,7 +3513,7 @@ mod test {
 
     #[test]
     fn add_inputs() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3558,7 +3558,7 @@ mod test {
 
     #[test]
     fn unused_incompatible_inputs() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3651,7 +3651,7 @@ mod test {
 
     #[test]
     fn add_mat_plus_scalar() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3731,7 +3731,7 @@ mod test {
 
     #[test]
     fn quantize_dequantize_linear_output_dtype() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3793,7 +3793,7 @@ mod test {
 
     #[test]
     fn rustnn_save_webnn_round_trips_through_loader() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3848,7 +3848,7 @@ mod test {
 
     #[test]
     fn rustnn_save_webnn_round_trips_packed_4bit_constants_and_executes() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let options = MLContextOptions::new(MLPowerPreference::Default, false)
             .with_rustnn_allow_int4_uint4(true);
         let context = MLContext::create(&options);
@@ -3942,7 +3942,7 @@ mod test {
 
     #[test]
     fn rustnn_save_webnn_emits_named_constant_weight_ref() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -3979,7 +3979,7 @@ mod test {
 
     #[test]
     fn rustnn_save_webnn_rejects_output_name_colliding_with_input() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -4020,7 +4020,7 @@ mod test {
 
     #[test]
     fn rustnn_save_webnn_rejects_duplicate_output_operand() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -4059,7 +4059,7 @@ mod test {
 
     #[test]
     fn rustnn_saved_shape_operations_reload_and_execute() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -4157,7 +4157,7 @@ mod test {
 
     #[test]
     fn rustnn_saved_gemm_bias_reloads_by_operand_name_and_executes() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
@@ -4236,7 +4236,7 @@ mod test {
 
     #[test]
     fn rustnn_saved_split_outputs_reload_and_execute() {
-        let _ = pretty_env_logger::try_init();
+        crate::instrumentation::test_support::init_subscriber();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;

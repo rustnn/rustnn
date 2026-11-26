@@ -2,6 +2,7 @@
 // (Apache 2.0)
 use std::{
     fmt,
+    io::IsTerminal,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -955,7 +956,15 @@ async fn load_weights(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
+                .from_env_lossy(),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .try_init();
     let args = Args::parse();
     ensure!(args.num_inferences >= 1, "--num-inferences must be >= 1");
 

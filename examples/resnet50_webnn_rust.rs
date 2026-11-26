@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -335,7 +336,15 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
-    pretty_env_logger::init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::ERROR.into())
+                .from_env_lossy(),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .try_init();
     if let Err(err) = run() {
         eprintln!("error: {err}");
         std::process::exit(1);

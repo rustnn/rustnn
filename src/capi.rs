@@ -19,9 +19,11 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::io::IsTerminal;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
+use std::sync::Once;
 
 use crate::mlcontext::{
     Backend, BackendDevice, DeviceType, MLContext, MLContextOptions, MLGraph, MLNamedOperands,
@@ -747,13 +749,33 @@ pub extern "C" fn rustnn_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
 }
 
-/// Install rustnn's `pretty_env_logger` global logger if no logger is installed yet.
+/// Install a `tracing_subscriber` global subscriber if none is installed yet.
 ///
-/// Set `RUST_LOG` before calling this function. Repeated calls are safe; calls made after another
-/// global logger has already been installed have no effect.
+/// Set `RUST_LOG` before the first call; errors are printed by default. Call this during startup:
+/// the subscriber is process-global and cannot be removed, so keep the rustnn library loaded
+/// while other code may log through it. Repeated calls are safe, and an existing subscriber or
+/// `log` logger is not replaced.
 #[unsafe(no_mangle)]
 pub extern "C" fn rustnn_init_logger() {
-    let _ = pretty_env_logger::try_init();
+    static INIT: Once = Once::new();
+    // A panic must not cross the C ABI boundary or poison `INIT`.
+    INIT.call_once(|| {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(
+                            tracing_subscriber::filter::LevelFilter::ERROR.into(),
+                        )
+                        .with_env_var("RUST_LOG")
+                        .from_env_lossy(),
+                )
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+                .with_writer(std::io::stderr)
+                .with_ansi(std::io::stderr().is_terminal())
+                .try_init();
+        }));
+    });
 }
 
 /// Allocate an [MLOperandDescriptor] from a data type and shape.

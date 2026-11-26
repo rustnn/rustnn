@@ -127,9 +127,9 @@ Include the generated header and link the imported CMake target:
 
 The C API follows these conventions:
 
-- Call `rustnn_init_logger()` after setting `RUST_LOG` to install
-  `pretty_env_logger`. Initialization is idempotent and has no effect if the
-  process has already installed another global Rust logger.
+- Call `rustnn_init_logger()` during startup to install a `tracing_subscriber`
+  global subscriber. Set `RUST_LOG` to filter it; errors print by default.
+  Repeated calls are safe.
 - Functions return `RustnnStatus`. Compare it with `RustnnStatus_Success`.
 - `rustnn_last_error_message()` describes the most recent failure on the
   calling thread. The returned pointer is borrowed and is only valid until the
