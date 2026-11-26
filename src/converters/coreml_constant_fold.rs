@@ -48,7 +48,9 @@ use crate::graph::{ConstantData, DataType, Dimension, GraphInfo, OperandKind};
 use crate::operators::Operation;
 
 /// Returns a copy of `graph` with every foldable view of a constant folded, or `None` when
-/// the graph has nothing to fold (the caller then lowers the original without cloning it).
+/// the graph has nothing to fold. The converter rewrites through
+/// [`fold_constant_views_in_place`]; this form keeps the tests' original graph.
+#[cfg(test)]
 pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
     if !has_candidate(graph) {
         return None;
@@ -58,7 +60,7 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
 }
 
 /// Whether any operation is a view or float expression of a constant that could fold.
-fn has_candidate(graph: &GraphInfo) -> bool {
+pub(crate) fn has_candidate(graph: &GraphInfo) -> bool {
     graph.operations.iter().any(|operation| {
         matches!(
             operation,
