@@ -31,6 +31,7 @@ exclude = [
 # docs.rs builds with the backends that compile on Linux so their APIs appear in the docs.
 [package.metadata.docs.rs]
 features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "burn-cpu-runtime", "dynamic-inputs"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 # The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to `cfg(feature = "cargo-clippy")`,
 # which rustc flags as an unexpected cfg. A file-level `#![allow(unexpected_cfgs)]` does not

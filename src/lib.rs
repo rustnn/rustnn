@@ -128,6 +128,10 @@
 
 // Every public item needs a doc comment; CI denies warnings.
 #![warn(missing_docs)]
+// Automatically document feature availability when building on docs.rs.
+// Behind docrs flag because unstable feature https://doc.rust-lang.org/unstable-book/language-features/doc-cfg.html
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, doc(auto_cfg))]
 
 pub mod backend_selection;
 pub mod backends;
