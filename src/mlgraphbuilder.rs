@@ -2352,7 +2352,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         let id = recorder.add_constant(
             None,
             OperandDescriptor {
-                data_type: tensor.data_type().into(),
+                data_type: tensor.data_type(),
                 shape: tensor
                     .shape()
                     .iter()

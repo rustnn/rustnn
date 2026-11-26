@@ -478,7 +478,7 @@ fn main() -> anyhow::Result<()> {
     info!("Loading graph: {model_path:?}");
     let graph_info = rustnn::loader::load_graph_from_path_with_options(
         &model_path,
-        &rustnn::loader::GraphLoadOptions::default(),
+        rustnn::loader::GraphLoadOptions::default(),
     )
     .with_context(|| format!("Failed to load {model_path:?}"))?;
 

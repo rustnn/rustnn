@@ -235,7 +235,7 @@ fn run() -> Result<(), String> {
     println!("Loading graph: {}", args.model.display());
     let graph = rustnn::loader::load_graph_from_path_with_options(
         &args.model,
-        &rustnn::loader::GraphLoadOptions {
+        rustnn::loader::GraphLoadOptions {
             resolve_external_weights: true,
             ..Default::default()
         },
