@@ -189,6 +189,47 @@ fn slice_ends_from_extents(
         .collect()
 }
 
+/// A permutation whose `TRANSPOSE` of `in_shape` yields `out_shape` with the input `axis`
+/// last, i.e. output dimension `i` is `in_shape[perm[i]]` and `perm[last] == axis`.
+///
+/// Returns `None` when the shapes are not permutations of each other or no such order exists.
+/// Ranks above six are left to the caller's default path.
+fn axis_last_permutation(in_shape: &[i32], out_shape: &[i32], axis: usize) -> Option<Vec<i32>> {
+    fn search(
+        in_shape: &[i32],
+        out_shape: &[i32],
+        axis: usize,
+        perm: &mut [usize],
+        used: &mut [bool],
+        pos: usize,
+    ) -> bool {
+        if pos == perm.len() {
+            return perm[perm.len() - 1] == axis;
+        }
+        for candidate in 0..perm.len() {
+            if used[candidate] || in_shape[candidate] != out_shape[pos] {
+                continue;
+            }
+            used[candidate] = true;
+            perm[pos] = candidate;
+            if search(in_shape, out_shape, axis, perm, used, pos + 1) {
+                return true;
+            }
+            used[candidate] = false;
+        }
+        false
+    }
+
+    let rank = in_shape.len();
+    if rank != out_shape.len() || rank > 6 || axis >= rank {
+        return None;
+    }
+    let mut perm = vec![0usize; rank];
+    let mut used = vec![false; rank];
+    search(in_shape, out_shape, axis, &mut perm, &mut used, 0)
+        .then(|| perm.iter().map(|&value| value as i32).collect())
+}
+
 macro_rules! scalar_const {
     ($ctx:expr, $name:expr, $val:expr, $tfl_type:expr) => {{
         // The bytes have to match the tensor's own type: an f32 payload in an int8 or
@@ -492,6 +533,8 @@ impl<'a> TfliteContext<'a> {
                 quantization: None,
                 is_variable: false,
                 sparsity: None,
+                // rustnn executes LiteRT graphs at their max-sized shapes and has no resize
+                // path (`rustnn_resize_tensor` is unimplemented), so the model is static.
                 shape_signature: None,
                 has_rank: true,
                 variant_tensors: None,
@@ -3337,6 +3380,7 @@ impl<'a> TfliteContext<'a> {
     fn build_softmax_op(
         &mut self,
         op: &Operation,
+        graph: &GraphInfo,
         tensor_map: &HashMap<u32, u32>,
         operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
         in_tensor: i32,
@@ -3346,6 +3390,65 @@ impl<'a> TfliteContext<'a> {
         if let Operation::Softmax { axis, .. } = op {
             let rank = in_shape.len() as i32;
             if rank > 0 && *axis as i32 != rank - 1 {
+                let out_id = op.outputs()[0];
+                let out_shape: Vec<i32> = graph
+                    .operand(out_id)
+                    .map(|operand| dimensions_to_i32(&operand.descriptor.shape))
+                    .unwrap_or_else(|| in_shape.to_vec());
+
+                // The NHWC rewrite can relaid out an operand that feeds a spatial op without
+                // remapping the op that produces it. The declared output is then a permutation
+                // of the softmax input: fold the axis-to-last transpose into that permutation
+                // and softmax directly into the output tensor. Transposing back to the input
+                // layout would contradict the declared output and leave TFLite's transpose to
+                // resize the tensor behind the next op's back.
+                if out_shape != in_shape
+                    && let Some(perm) = axis_last_permutation(in_shape, &out_shape, *axis as usize)
+                {
+                    let perm_b = perm
+                        .iter()
+                        .flat_map(|&v| v.to_le_bytes())
+                        .collect::<Vec<_>>();
+                    let perm_t =
+                        self.add_constant("sm_perm", &[rank], tflite::TensorType::INT32, &perm_b);
+                    let mid_t = self.add_tensor("sm_mid", &out_shape, in_type, 0);
+                    let oc_t = self.add_opcode(std_op::TRANSPOSE, 1);
+                    let iv_t = self.fbb.create_vector(&[in_tensor, perm_t as i32]);
+                    let ov_t = self.fbb.create_vector(&[mid_t as i32]);
+                    operator_offsets.push(tflite::Operator::create(
+                        &mut self.fbb,
+                        &tflite::OperatorArgs {
+                            opcode_index: oc_t,
+                            inputs: Some(iv_t),
+                            outputs: Some(ov_t),
+                            builtin_options: None,
+                            builtin_options_type: tflite::BuiltinOptions::NONE,
+                            ..Default::default()
+                        },
+                    ));
+
+                    let out_t = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+                    let oc_s = self.add_opcode(std_op::SOFTMAX, 1);
+                    let iv_s = self.fbb.create_vector(&[mid_t as i32]);
+                    let ov_s = self.fbb.create_vector(&[out_t]);
+                    let so = tflite::SoftmaxOptions::create(
+                        &mut self.fbb,
+                        &tflite::SoftmaxOptionsArgs { beta: 1.0 },
+                    );
+                    operator_offsets.push(tflite::Operator::create(
+                        &mut self.fbb,
+                        &tflite::OperatorArgs {
+                            opcode_index: oc_s,
+                            inputs: Some(iv_s),
+                            outputs: Some(ov_s),
+                            builtin_options: Some(so.as_union_value()),
+                            builtin_options_type: tflite::BuiltinOptions::SoftmaxOptions,
+                            ..Default::default()
+                        },
+                    ));
+                    return true;
+                }
+
                 let last = (rank - 1) as usize;
                 let mut perm: Vec<i32> = (0..rank).collect();
                 perm.swap(*axis as usize, last);
@@ -6364,7 +6467,10 @@ fn build_spatial_inputs<'a>(
         _ => None,
     };
     if let Some((padding, _is_pool)) = pad_opts {
-        if padding.len() >= 4 {
+        // A zero padding is a no-op. Emitting the PAD anyway inserts a node between the
+        // producer and the convolution, which delegate partitioners handle poorly (and the
+        // node is dead weight in every model).
+        if padding.len() >= 4 && padding.iter().any(|&p| p != 0) {
             // WebNN padding order is (beginH, endH, beginW, endW); the PAD op
             // takes a (begin, end) pair per axis of the NHWC operand.
             let (bh, eh, bw, ew) = (
@@ -6766,13 +6872,16 @@ fn parse_mlnumber(value: Option<&serde_json::Value>) -> Option<f64> {
     }
 }
 
+/// Concrete TFLite dimensions for a WebNN shape: dynamic dimensions use their `max_size`.
+///
+/// TFLite multiplies tensor dims for `NumElements`, so a `-1` in a tensor's `shape` makes the
+/// count wrong (`[1, 64, -1, -1]` has 64 elements, not the max-sized 33600) and a reshape to
+/// the max-sized target fails to prepare. The LiteRT backend executes at these max sizes and
+/// cannot resize tensors, so the graph is serialized as fully static.
 fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
     shape
         .iter()
-        .map(|d| match d {
-            Dimension::Static(n) => *n as i32,
-            Dimension::Dynamic(_) => -1,
-        })
+        .map(|d| d.get_static_or_max_size() as i32)
         .collect()
 }
 
@@ -7609,6 +7718,7 @@ fn build_native_operators<'a>(
         // Softmax: TFLite only supports last-axis. TRANSPOSE workaround for non-last-axis.
         if ctx.build_softmax_op(
             op,
+            graph,
             &tensor_map,
             &mut operator_offsets,
             in_tensor,
@@ -8165,6 +8275,187 @@ mod tests {
             constant_operand_ids_to_handles: HashMap::new(),
             quantized: false,
         }
+    }
+
+    /// A dynamic dimension is stored at its `max_size` in the TFLite tensor `shape` (TFLite
+    /// multiplies dims to count elements) and no `shape_signature` is emitted, because the
+    /// backend executes at max sizes and cannot resize tensors. Regression for a rank-4
+    /// `[1, 4, -1, -1]` input counted as 4 elements against a reshape target of `[1, 4, 4]`
+    /// (16): the model failed to prepare with `num_input_elements != num_output_elements`.
+    #[test]
+    fn dynamic_dimensions_are_max_sized_in_tensor_shapes() {
+        let dynamic = |name: &str, max_size| {
+            Dimension::Dynamic(crate::graph::DynamicDimension {
+                name: name.into(),
+                max_size,
+            })
+        };
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![
+                Dimension::Static(1),
+                Dimension::Static(4),
+                dynamic("h", 2),
+                dynamic("w", 2),
+            ],
+            pending_permutation: vec![],
+        };
+        let output_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: s(&[1, 4, 4]),
+            pending_permutation: vec![],
+        };
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("x".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("y".into()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation::Reshape {
+                input: 0,
+                new_shape: vec![
+                    crate::operator_options::MLDimension::Static(1),
+                    crate::operator_options::MLDimension::Static(4),
+                    crate::operator_options::MLDimension::Static(4),
+                ],
+                options: None,
+                outputs: vec![1],
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            quantized: false,
+        };
+
+        let bytes = convert_ok(&graph);
+        let model = tflite::root_as_model(&bytes).expect("valid TFLite model");
+        let subgraph = model.subgraphs().expect("subgraph").get(0);
+        let input = subgraph
+            .tensors()
+            .expect("tensors")
+            .iter()
+            .find(|tensor| tensor.name() == Some("x"))
+            .expect("input tensor");
+
+        let shape: Vec<i32> = input.shape().expect("shape").iter().collect();
+        assert_eq!(shape, vec![1, 4, 2, 2]);
+        assert!(
+            input.shape_signature().is_none(),
+            "the LiteRT graph is static at max sizes, so it must not advertise dynamic dims"
+        );
+    }
+
+    /// The NHWC rewrite can relaid out a softmax output that feeds a spatial op without
+    /// remapping the softmax itself, so the declared output is a permutation of the input.
+    /// The lowering must transpose into that layout and softmax there instead of transposing
+    /// back: the old code left the tensor to be resized by TFLite, and the next op then saw
+    /// the wrong shape (the YOLOv8s DFL head failed with 64 elements instead of 33600).
+    #[test]
+    fn relaid_softmax_output_is_written_in_the_declared_layout() {
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[1, 16, 4, 8400]),
+                        pending_permutation: vec![],
+                    },
+                    name: Some("x".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[1, 4, 8400, 16]),
+                        pending_permutation: vec![],
+                    },
+                    name: Some("y".into()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation::Softmax {
+                input: 0,
+                axis: 1,
+                options: None,
+                outputs: vec![1],
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            quantized: false,
+        };
+
+        let bytes = convert_ok(&graph);
+        let model = tflite::root_as_model(&bytes).expect("valid TFLite model");
+        let subgraph = model.subgraphs().expect("subgraph").get(0);
+        let operators = subgraph.operators().expect("operators");
+        let opcode = |index: u32| {
+            model
+                .operator_codes()
+                .expect("operator codes")
+                .get(index as usize)
+                .builtin_code()
+        };
+        let tensors = subgraph.tensors().expect("tensors");
+        let shape_of = |index: usize| -> Vec<i32> {
+            tensors.get(index).shape().expect("shape").iter().collect()
+        };
+
+        let mut transposes = Vec::new();
+        let mut softmaxes = Vec::new();
+        for operator in operators.iter() {
+            match opcode(operator.opcode_index()) {
+                tflite::BuiltinOperator::TRANSPOSE => transposes.push(operator),
+                tflite::BuiltinOperator::SOFTMAX => softmaxes.push(operator),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            transposes.len(),
+            1,
+            "one transpose into the declared layout"
+        );
+        assert_eq!(softmaxes.len(), 1);
+
+        let transpose = &transposes[0];
+        let transpose_inputs = transpose.inputs().expect("transpose inputs");
+        let transpose_outputs = transpose.outputs().expect("transpose outputs");
+        let transposed = shape_of(transpose_outputs.get(0) as usize);
+        assert_eq!(transposed, vec![1, 4, 8400, 16]);
+        let input_shape = shape_of(transpose_inputs.get(0) as usize);
+
+        let perm_tensor = tensors.get(transpose_inputs.get(1) as usize);
+        let perm_bytes: Vec<u8> = model
+            .buffers()
+            .expect("buffers")
+            .get(perm_tensor.buffer() as usize)
+            .data()
+            .expect("perm data")
+            .iter()
+            .collect();
+        let perm: Vec<i32> = perm_bytes
+            .chunks_exact(4)
+            .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(perm, vec![0, 2, 3, 1]);
+        let applied: Vec<i32> = perm
+            .iter()
+            .map(|&axis| input_shape[axis as usize])
+            .collect();
+        assert_eq!(applied, transposed, "the transpose must be self-consistent");
+
+        let softmax_outputs = softmaxes[0].outputs().expect("softmax outputs");
+        assert_eq!(
+            shape_of(softmax_outputs.get(0) as usize),
+            vec![1, 4, 8400, 16]
+        );
     }
 
     fn convert_ok(graph: &GraphInfo) -> Vec<u8> {

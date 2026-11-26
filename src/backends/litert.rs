@@ -741,6 +741,111 @@ fn modify_graph_for_nhwc(
             _ => {}
         }
     }
+
+    // A rank-changing reshape flattens its input's memory order; see the helper.
+    insert_transposes_before_rank_changing_reshapes(graph, spatial_operand_names);
+}
+
+/// Inserts an NHWC -> NCHW transpose before every rank-changing reshape whose input was
+/// relaid out.
+///
+/// A reshape does not move data: its target groups the input's flat elements. An NHWC
+/// operand flattens as `(h, w, c)`, while the WebNN target assumes `(c, h, w)`, so a
+/// rank-changing reshape such as `[1, H, W, C] -> [1, C, H*W]` would otherwise mix the
+/// channels. The transpose restores the WebNN order before the flatten.
+fn insert_transposes_before_rank_changing_reshapes(
+    graph: &mut GraphInfo,
+    spatial_operand_names: &std::collections::HashSet<u32>,
+) {
+    // A graph transpose already changes the data order, and the rewrites above fold the
+    // relayout into it. Inserting a second transpose after it would cancel that correction:
+    // the face model's head transpose restores exactly the order its reshape expects.
+    let transposed: std::collections::HashSet<u32> = graph
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            Operation::Transpose { outputs, .. } => Some(outputs.iter().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+
+    let mut pending: Vec<(usize, u32, crate::graph::Operand)> = Vec::new();
+    for (index, op) in graph.operations.iter().enumerate() {
+        let Operation::Reshape {
+            input, new_shape, ..
+        } = op
+        else {
+            continue;
+        };
+        // Rank-4 targets are relabelled in place by the rewrites above; only a rank change
+        // has to materialise the layout difference. Inputs produced by a transpose are
+        // already in the order the model asked for.
+        if new_shape.len() == 4
+            || !spatial_operand_names.contains(input)
+            || transposed.contains(input)
+        {
+            continue;
+        }
+        let Some(operand) = graph.operand(*input) else {
+            continue;
+        };
+        let shape = &operand.descriptor.shape;
+        if shape.len() != 4 {
+            continue;
+        }
+        let nchw = [0, 3, 1, 2]
+            .iter()
+            .map(|&axis| shape[axis].clone())
+            .collect();
+        let name = match &operand.name {
+            Some(name) => format!("{name}_nchw"),
+            None => format!("reshape_{index}_nchw"),
+        };
+        pending.push((
+            index,
+            *input,
+            crate::graph::Operand {
+                kind: crate::graph::OperandKind::Intermediate,
+                descriptor: crate::graph::OperandDescriptor {
+                    data_type: operand.descriptor.data_type,
+                    shape: nchw,
+                    pending_permutation: vec![],
+                },
+                name: Some(name),
+            },
+        ));
+    }
+    if pending.is_empty() {
+        return;
+    }
+
+    let indices: Vec<(usize, u32)> = pending
+        .iter()
+        .map(|(index, input, _)| (*index, *input))
+        .collect();
+    let first_id = graph.operands.len() as u32;
+    for (_, _, operand) in pending {
+        graph.operands.push(operand);
+    }
+    // Point each reshape at its transposed input, then insert the transposes back to front
+    // so the earlier operation indices stay valid.
+    for (offset, (index, _)) in indices.iter().enumerate() {
+        if let Operation::Reshape { input, .. } = &mut graph.operations[*index] {
+            *input = first_id + offset as u32;
+        }
+    }
+    for (offset, (index, input)) in indices.iter().enumerate().rev() {
+        let transpose = Operation::Transpose {
+            input: *input,
+            options: Some(crate::operator_options::MLTransposeOptions {
+                label: String::new(),
+                permutation: vec![0, 3, 1, 2],
+            }),
+            outputs: vec![first_id + offset as u32],
+        };
+        graph.operations.insert(*index, transpose);
+    }
 }
 
 /// Rewrites a permutation for the case where both operands are relaid out. The relayout
@@ -1497,6 +1602,189 @@ mod tests {
         assert_eq!(
             fold_output_relayout_into_permutation(&[0, 1, 2, 4]),
             vec![0, 1, 2, 4]
+        );
+    }
+
+    /// A rank-changing reshape flattens the operand's memory order: on an NHWC operand
+    /// `(h, w, c)` differs from the WebNN `(c, h, w)` order. The rewrite inserts a transpose
+    /// back to NCHW before the reshape. Regression for the YOLOv8 seg head.
+    #[test]
+    fn rank_changing_reshape_of_a_relaid_operand_gets_an_nchw_transpose() {
+        use crate::graph::{
+            DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
+        };
+        use crate::operator_options::{MLDimension, MLPool2dOptions};
+
+        let desc = |shape: &[u32]| OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(shape),
+            pending_permutation: vec![],
+        };
+        let mut graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: desc(&[1, 64, 20, 20]),
+                    name: Some("x".into()),
+                },
+                Operand {
+                    kind: OperandKind::Intermediate,
+                    descriptor: desc(&[1, 64, 20, 20]),
+                    name: Some("pooled".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: desc(&[1, 64, 400]),
+                    name: Some("y".into()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![2],
+            operations: vec![
+                Operation::MaxPool2d {
+                    input: 0,
+                    options: Some(MLPool2dOptions::default()),
+                    outputs: vec![1],
+                },
+                Operation::Reshape {
+                    input: 1,
+                    new_shape: vec![
+                        MLDimension::Static(1),
+                        MLDimension::Static(64),
+                        MLDimension::Static(400),
+                    ],
+                    options: None,
+                    outputs: vec![2],
+                },
+            ],
+            constant_operand_ids_to_handles: std::collections::HashMap::new(),
+            quantized: false,
+        };
+
+        let (spatial, _) = collect_spatial_info(&graph);
+        modify_graph_for_nhwc(&mut graph, &spatial);
+
+        // The pool output is relaid out to NHWC.
+        assert_eq!(
+            graph.operands[1].descriptor.shape,
+            to_dimension_vector(&[1, 20, 20, 64])
+        );
+        // The reshape reads a transposed NCHW operand, and the transpose sits before it.
+        let reshape_index = graph
+            .operations
+            .iter()
+            .position(|op| matches!(op, Operation::Reshape { .. }))
+            .expect("reshape");
+        assert!(reshape_index > 0);
+        let Operation::Transpose {
+            input,
+            options,
+            outputs,
+        } = &graph.operations[reshape_index - 1]
+        else {
+            panic!("expected a transpose before the reshape");
+        };
+        assert_eq!(*input, 1);
+        assert_eq!(
+            options.as_ref().expect("options").permutation,
+            vec![0, 3, 1, 2]
+        );
+        assert_eq!(
+            graph.operands[outputs[0] as usize].descriptor.shape,
+            to_dimension_vector(&[1, 64, 20, 20])
+        );
+        let Operation::Reshape { input, .. } = &graph.operations[reshape_index] else {
+            unreachable!("reshape found above");
+        };
+        assert_eq!(*input, outputs[0]);
+    }
+
+    /// A graph transpose before a rank-changing reshape already restores the order the
+    /// reshape expects; inserting another transpose after it would cancel that correction
+    /// (the face model's head).
+    #[test]
+    fn rank_changing_reshape_after_a_transpose_is_left_alone() {
+        use crate::graph::{
+            DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
+        };
+        use crate::operator_options::{MLDimension, MLPool2dOptions, MLTransposeOptions};
+
+        let desc = |shape: &[u32]| OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(shape),
+            pending_permutation: vec![],
+        };
+        let mut graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: desc(&[1, 64, 20, 20]),
+                    name: Some("x".into()),
+                },
+                Operand {
+                    kind: OperandKind::Intermediate,
+                    descriptor: desc(&[1, 64, 20, 20]),
+                    name: Some("pooled".into()),
+                },
+                Operand {
+                    kind: OperandKind::Intermediate,
+                    descriptor: desc(&[1, 20, 20, 64]),
+                    name: Some("transposed".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: desc(&[1, 64, 400]),
+                    name: Some("y".into()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations: vec![
+                Operation::MaxPool2d {
+                    input: 0,
+                    options: Some(MLPool2dOptions::default()),
+                    outputs: vec![1],
+                },
+                Operation::Transpose {
+                    input: 1,
+                    options: Some(MLTransposeOptions {
+                        label: String::new(),
+                        permutation: vec![0, 2, 3, 1],
+                    }),
+                    outputs: vec![2],
+                },
+                Operation::Reshape {
+                    input: 2,
+                    new_shape: vec![
+                        MLDimension::Static(1),
+                        MLDimension::Static(64),
+                        MLDimension::Static(400),
+                    ],
+                    options: None,
+                    outputs: vec![3],
+                },
+            ],
+            constant_operand_ids_to_handles: std::collections::HashMap::new(),
+            quantized: false,
+        };
+
+        let (spatial, _) = collect_spatial_info(&graph);
+        modify_graph_for_nhwc(&mut graph, &spatial);
+
+        let transposes = graph
+            .operations
+            .iter()
+            .filter(|op| matches!(op, Operation::Transpose { .. }))
+            .count();
+        assert_eq!(transposes, 1, "the graph transpose must not be cancelled");
+        let reshape_input = graph.operations.iter().find_map(|op| match op {
+            Operation::Reshape { input, .. } => Some(*input),
+            _ => None,
+        });
+        assert_eq!(
+            reshape_input,
+            Some(2),
+            "the reshape still reads the transpose"
         );
     }
 }
