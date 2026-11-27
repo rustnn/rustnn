@@ -732,18 +732,20 @@ pub enum Operation {
 
     // ---------- QuantizeLinear / DequantizeLinear ----------
     /// [quantizeLinear()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-quantizelinear)
+    /// Requires `input`, `scale`, and `zero_point` operand indices.
     QuantizeLinear {
         input: OperandIndex,
         scale: OperandIndex,
-        zero_point: Option<OperandIndex>,
+        zero_point: OperandIndex,
         options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
     /// [dequantizeLinear()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-dequantizelinear)
+    /// Requires `input`, `scale`, and `zero_point` operand indices.
     DequantizeLinear {
         input: OperandIndex,
         scale: OperandIndex,
-        zero_point: Option<OperandIndex>,
+        zero_point: OperandIndex,
         options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -1169,10 +1171,7 @@ impl Operation {
                 zero_point,
                 ..
             } => {
-                let mut inps = vec![*input, *scale];
-                if let Some(z) = zero_point {
-                    inps.push(*z);
-                }
+                let inps = vec![*input, *scale, *zero_point];
                 inps
             }
             Operation::DequantizeLinear {
@@ -1181,10 +1180,7 @@ impl Operation {
                 zero_point,
                 ..
             } => {
-                let mut inps = vec![*input, *scale];
-                if let Some(z) = zero_point {
-                    inps.push(*z);
-                }
+                let inps = vec![*input, *scale, *zero_point];
                 inps
             }
             Operation::Softplus { input, .. } => vec![*input],
@@ -2162,10 +2158,7 @@ impl Operation {
                 options,
                 ..
             } => {
-                let mut inps = vec![*input, *scale];
-                if let Some(z) = zero_point {
-                    inps.push(*z);
-                }
+                let inps = vec![*input, *scale, *zero_point];
                 (
                     tag.clone(),
                     inps,
@@ -2179,10 +2172,7 @@ impl Operation {
                 options,
                 ..
             } => {
-                let mut inps = vec![*input, *scale];
-                if let Some(z) = zero_point {
-                    inps.push(*z);
-                }
+                let inps = vec![*input, *scale, *zero_point];
                 (
                     tag.clone(),
                     inps,
@@ -2864,8 +2854,8 @@ impl Operation {
                 options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
-            "quantizeLinear" if input_operands.len() >= 2 => {
-                let zero_point = input_operands.get(2).copied();
+            "quantizeLinear" if input_operands.len() == 3 => {
+                let zero_point = at(input_operands, 2)?;
                 Some(Operation::QuantizeLinear {
                     input: at(input_operands, 0)?,
                     scale: at(input_operands, 1)?,
@@ -2874,8 +2864,8 @@ impl Operation {
                     outputs: outputs.to_vec(),
                 })
             }
-            "dequantizeLinear" if input_operands.len() >= 2 => {
-                let zero_point = input_operands.get(2).copied();
+            "dequantizeLinear" if input_operands.len() == 3 => {
+                let zero_point = at(input_operands, 2)?;
                 Some(Operation::DequantizeLinear {
                     input: at(input_operands, 0)?,
                     scale: at(input_operands, 1)?,

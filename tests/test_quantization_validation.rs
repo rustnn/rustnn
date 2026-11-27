@@ -44,7 +44,7 @@ fn graph(
             Operation::QuantizeLinear {
                 input: 0,
                 scale: 1,
-                zero_point: Some(2),
+                zero_point: 2,
                 options: None,
                 outputs: vec![3],
             }
@@ -52,7 +52,7 @@ fn graph(
             Operation::DequantizeLinear {
                 input: 0,
                 scale: 1,
-                zero_point: Some(2),
+                zero_point: 2,
                 options: None,
                 outputs: vec![3],
             }
@@ -79,7 +79,7 @@ fn builder_result_with_options(
             builder.input(
                 operand.name.as_ref().unwrap(),
                 &MLOperandDescriptor::new(
-                    MLOperandDataType::try_from(operand.descriptor.data_type).unwrap(),
+                    operand.descriptor.data_type,
                     operand
                         .descriptor
                         .static_or_max_shape()
@@ -91,9 +91,9 @@ fn builder_result_with_options(
         );
     }
     let result = if matches!(graph.operations[0], Operation::QuantizeLinear { .. }) {
-        builder.quantize_linear_with_zeropoint(inputs[0], inputs[1], inputs[2])?
+        builder.quantize_linear(inputs[0], inputs[1], inputs[2])?
     } else {
-        builder.dequantize_linear_with_zeropoint(inputs[0], inputs[1], inputs[2])?
+        builder.dequantize_linear(inputs[0], inputs[1], inputs[2])?
     };
     let mut outputs = MLNamedOperands::new();
     outputs.insert("result", result);
@@ -299,7 +299,7 @@ fn quantization_preserves_scalar_per_tensor_per_axis_and_blockwise_parameters() 
 }
 
 #[test]
-fn omitted_zero_point_preserves_the_existing_builder_extension() {
+fn explicit_zero_point_preserves_scale_output_type() {
     let mut builder = MLGraphBuilder::new_uncompiled();
     let input = builder
         .input(
@@ -313,7 +313,13 @@ fn omitted_zero_point_preserves_the_existing_builder_extension() {
             &MLOperandDescriptor::new(MLOperandDataType::Float16, vec![1]),
         )
         .unwrap();
-    let result = builder.dequantize_linear(input, scale).unwrap();
+    let zero_point = builder
+        .input(
+            "zero_point",
+            &MLOperandDescriptor::new(MLOperandDataType::Int8, vec![1]),
+        )
+        .unwrap();
+    let result = builder.dequantize_linear(input, scale, zero_point).unwrap();
     assert_eq!(
         builder.rustnn_operand_data_type(result).unwrap(),
         MLOperandDataType::Float16
@@ -343,7 +349,7 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
         .unwrap();
     assert!(
         builder
-            .quantize_linear_with_zeropoint(input, scalar_scale, scalar_zero)
+            .quantize_linear(input, scalar_scale, scalar_zero)
             .is_err()
     );
     let scale = builder
@@ -358,9 +364,7 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
             &MLOperandDescriptor::new(MLOperandDataType::Int8, vec![1, 1]),
         )
         .unwrap();
-    let result = builder
-        .quantize_linear_with_zeropoint(input, scale, zero)
-        .unwrap();
+    let result = builder.quantize_linear(input, scale, zero).unwrap();
     let mut outputs = MLNamedOperands::new();
     outputs.insert("result", result);
     let graph = builder.finish_graph_info(&outputs).unwrap();
@@ -434,5 +438,31 @@ fn quantization_accepts_the_specification_uint32_parameters() {
         );
         assert_imports(&graph);
         assert_imports(&builder_result(&graph).unwrap());
+    }
+}
+
+#[test]
+fn quantization_import_requires_a_zero_point() {
+    for quantize in [false, true] {
+        let graph = graph(
+            quantize,
+            if quantize {
+                DataType::Float32
+            } else {
+                DataType::Int8
+            },
+            DataType::Float32,
+            DataType::Int8,
+            &[2],
+            &[1],
+            &[1],
+        );
+        let mut interchange = rustnn::webnn_json::to_graph_json(&graph, false).unwrap();
+        interchange.nodes[0].inputs.pop();
+        assert!(rustnn::webnn_json::from_graph_json(&interchange).is_err());
+
+        let mut serialized = serde_json::to_value(&graph.operations[0]).unwrap();
+        serialized["input_operands"].as_array_mut().unwrap().pop();
+        assert!(serde_json::from_value::<Operation>(serialized).is_err());
     }
 }

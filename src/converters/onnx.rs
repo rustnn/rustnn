@@ -3511,7 +3511,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             if matches!(&op, Operation::DequantizeLinear { .. }) {
                 let input_id = op.input_operands()[0];
                 let scale_id = op.input_operands()[1];
-                let zero_point_id = op.input_operands().get(2).copied();
+                let zero_point_id = op.input_operands()[2];
                 let output_id = op
                     .output_operand()
                     .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
@@ -3672,7 +3672,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                let centered_name = if let Some(zp_id) = zero_point_id {
+                let centered_name = {
+                    let zp_id = zero_point_id;
                     let zp_shape = operand_shapes.get(&zp_id).cloned().ok_or_else(|| {
                         Self::invalid_operand(
                             "dequantizeLinear zeroPoint shape lookup",
@@ -3713,8 +3714,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     });
                     sub_name
-                } else {
-                    input_cast_name
                 };
 
                 nodes.push(NodeProto {
@@ -10440,7 +10439,7 @@ mod tests {
         let operator = Operation::QuantizeLinear {
             input: 0,
             scale: 1,
-            zero_point: Some(2),
+            zero_point: 2,
             options: None,
             outputs: vec![3],
         };
@@ -10525,7 +10524,7 @@ mod tests {
         let operator = Operation::DequantizeLinear {
             input: 0,
             scale: 1,
-            zero_point: Some(2),
+            zero_point: 2,
             options: None,
             outputs: vec![3],
         };
@@ -10608,7 +10607,7 @@ mod tests {
         let operator = Operation::QuantizeLinear {
             input: 0,
             scale: 1,
-            zero_point: Some(2),
+            zero_point: 2,
             options: None,
             outputs: vec![3],
         };

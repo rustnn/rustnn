@@ -31,6 +31,10 @@ validate a model. Compile it with
 then use the usual tensor write, dispatch, and read calls. Model-output comparisons belong in
 execution tests.
 
+`quantizeLinear` and `dequantizeLinear` require three input operands: `input`, `scale`,
+and `zeroPoint`. Graphs that omit the zero point are rejected; represent symmetric
+quantization with an explicit zero constant matching the scale shape.
+
 Loading enforces the generated specification data type rules by default. To use
 backend extensions such as packed 4-bit quantization, set
 `with_rustnn_allow_int4_uint4(true)` on `MLContextOptions` and pass

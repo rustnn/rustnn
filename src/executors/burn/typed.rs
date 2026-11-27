@@ -698,13 +698,13 @@ fn quantize<B: Backend>(
     env: &TensorEnv<B>,
     input: u32,
     scale: u32,
-    zero_point: Option<u32>,
+    zero_point: u32,
     dtype: DataType,
     quantize: bool,
 ) -> Result<Array, GraphError> {
     let a = Array::load(env, input)?;
     let scale = Array::load(env, scale)?;
-    let zp = zero_point.map(|id| Array::load(env, id)).transpose()?;
+    let zp = Array::load(env, zero_point)?;
     let param = |a: &Array, c: &[usize]| {
         let offset = c.len() - a.shape.len();
         let coords = a
@@ -717,11 +717,7 @@ fn quantize<B: Backend>(
     };
     a.mapped(a.shape.clone(), |c| {
         let s = f64::from(param(&scale, c).float());
-        let z = zp
-            .as_ref()
-            .map(|a| param(a, c).integer())
-            .transpose()?
-            .unwrap_or(0);
+        let z = param(&zp, c).integer()?;
         if quantize {
             let x = f64::from(a.at(c).float());
             let rounded = if s == 0.0 {

@@ -786,11 +786,7 @@ fn invoke_builder_method(
         "quantizeLinear" => {
             let input = expect_operand(args, 0, op_name)?;
             let scale = expect_operand(args, 1, op_name)?;
-            let zero_point = if args.positional.len() > 2 {
-                Some(expect_operand(args, 2, op_name)?)
-            } else {
-                None
-            };
+            let zero_point = expect_operand(args, 2, op_name)?;
             Ok(InvokeResult::Single(
                 builder
                     .quantize_linear_with_options(
@@ -805,11 +801,7 @@ fn invoke_builder_method(
         "dequantizeLinear" => {
             let input = expect_operand(args, 0, op_name)?;
             let scale = expect_operand(args, 1, op_name)?;
-            let zero_point = if args.positional.len() > 2 {
-                Some(expect_operand(args, 2, op_name)?)
-            } else {
-                None
-            };
+            let zero_point = expect_operand(args, 2, op_name)?;
             Ok(InvokeResult::Single(
                 builder
                     .dequantize_linear_with_options(

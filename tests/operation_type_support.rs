@@ -99,7 +99,7 @@ fn packed_integer_option_preserves_other_domains_and_same_as_rules() {
     let operation = Operation::DequantizeLinear {
         input: 0,
         scale: 1,
-        zero_point: Some(2),
+        zero_point: 2,
         options: None,
         outputs: vec![3],
     };

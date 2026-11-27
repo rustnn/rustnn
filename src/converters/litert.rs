@@ -2003,7 +2003,7 @@ impl<'a> TfliteContext<'a> {
             } => {
                 let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
                 let scale_t = *tensor_map.get(scale_id).unwrap_or(scale_id) as i32;
-                let zp_id = zero_point.unwrap_or(*input);
+                let zp_id = *zero_point;
                 let zp_t = *tensor_map.get(&zp_id).unwrap_or(&zp_id) as i32;
                 let in_dt = graph
                     .operand(*input)
@@ -2119,7 +2119,8 @@ impl<'a> TfliteContext<'a> {
                     &out_shape,
                     in_type
                 );
-                let cur = if let Some(zp) = zero_point {
+                let cur = {
+                    let zp = zero_point;
                     let zp_t = *tensor_map.get(&zp).unwrap_or(&zp) as i32;
                     let zp_dt = graph
                         .operand(*zp)
@@ -2158,8 +2159,6 @@ impl<'a> TfliteContext<'a> {
                         &out_shape,
                         in_type
                     )
-                } else {
-                    round_val
                 };
                 // The spec clamps to the range of the quantized type; a bare CAST wraps
                 // instead (445 lands in an int8 tensor as -67).
