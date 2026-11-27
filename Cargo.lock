@@ -4302,6 +4302,7 @@ dependencies = [
  "hiai-rs",
  "image",
  "js-sys",
+ "libc",
  "libloading 0.9.0",
  "libtest-mimic",
  "litert",
@@ -5511,8 +5512,7 @@ dependencies = [
 [[package]]
 name = "webnn-graph"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3045dd969f9cdc251c7ff43a0b465008a657eeeadac3ff4cf0bf8932370e53c"
+source = "git+https://github.com/rebeckerspecialties/webnn-graph?rev=1b6a13f#1b6a13fdf39c4924719172abf04609fbfdc395a7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -52,7 +52,7 @@ caches share the original error. CLI `--list` retains distinct failures from all
 
 | Symptom | Cause and fix |
 |---|---|
-| WPT: `No WPT backends available` (exit code 2) | A backend feature is compiled in but none of its runtimes could start; check the context-creation rows. Without any backend feature the harness exits successfully with a notice |
+| WPT: `No WPT backends available` (exit code 2) | A backend feature is compiled in but none of its runtimes could start. With `WPT_BACKEND` set, the line `[WPT] backend <name> is unavailable:` above it has the error; check the context-creation rows. Without any backend feature the harness exits successfully with a notice |
 | WPT: `no WPT conformance cases loaded` or `Node.js is required` | Install Node.js and run `make fetch-wpt`, or set `WPT_DIR` |
 | WPT: warning that the checkout does not match `WPT_REVISION` | Run `make fetch-wpt`; `WPT_STRICT_REVISION=1` turns the warning into an error |
 | `insta` reports a missing or changed snapshot | A trial changed status; review the `.snap.new` files and run `make wpt-sync-<backend>` to regenerate baselines |

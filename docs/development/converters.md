@@ -139,6 +139,17 @@ Rules that hold for every converter:
   This adaptation currently applies to static shapes.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- A build whose graph has inputs and at least 32 MiB of constants converts it in place
+  (`CoremlMlProgramConverter::convert_owned`, called from `CoremlBuilder::build`, which owns
+  the graph). The constant fold and the blockwise rewrite then edit the caller's graph instead
+  of a clone, and `WeightFileBuilder::file_backed` assembles the weight blob in an anonymous
+  temporary file; the build drops the graph's constants before it reads the blob back. The
+  weights are then on the heap once at a time instead of three times. The model and the blob
+  are those of the borrowing `convert_with_carried_state`, which every other caller keeps
+  using; `the_in_place_conversion_matches_the_borrowing_one` compares them. Where no
+  temporary file can be created (a sandboxed process, a full disk) the blob stays in memory.
+  Chromium's `GraphBuilderCoreml::WeightsFileHandle` writes constants to the weights file
+  the same way.
 - Static float32 `add`, `sub`, `mul`, `div`, `pow`, `sin`, `cos` and `concat` expressions are evaluated before
   CoreML lowering when each result is at most 4 MiB. This avoids a BNNS compiler
   memory fault for broadcast sinusoidal positional embeddings followed by concat

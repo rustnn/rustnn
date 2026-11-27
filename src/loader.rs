@@ -97,6 +97,8 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
 ///
 /// External constants are resolved once through [`webnn_graph::resolve_external_weights`], which
 /// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
+/// It reads the weights file one tensor at a time (the SafeTensors header, then each tensor's
+/// span), so the file is never in memory as a whole next to the constants built from it.
 /// The graph recorder validates operations and infers shapes. The returned graph owns the resolved
 /// weights; loading neither compiles a backend graph nor compares numerical outputs. Use
 /// [`crate::mlcontext::MLContext::rustnn_build_graph`] to compile it for execution.

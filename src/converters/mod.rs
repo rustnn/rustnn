@@ -68,10 +68,10 @@ pub use onnx::OnnxConverter;
 pub(crate) use trtx::LOGGER as trtx_logger;
 #[cfg(feature = "trtx-converter")]
 pub use trtx::TrtxConverter;
-#[cfg(feature = "coreml-converter")]
-pub(crate) use weight_file_builder::WeightFileBuilder;
 #[cfg(all(feature = "coreml-runtime", any(target_vendor = "apple", test)))]
 pub(crate) use weight_file_builder::weight_ranges;
+#[cfg(feature = "coreml-converter")]
+pub(crate) use weight_file_builder::{WeightBlob, WeightFileBuilder};
 
 #[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
 pub mod cann;

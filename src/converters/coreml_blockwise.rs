@@ -1787,6 +1787,48 @@ mod tests {
         lower(&builder.finish_graph_info(&outputs).unwrap())
     }
 
+    /// The in-place conversion that a build with large weights uses returns the borrowing
+    /// conversion's model and weight file, through the constant fold and the blockwise
+    /// rewrite, and leaves the caller's graph rewritten.
+    #[test]
+    fn the_in_place_conversion_matches_the_borrowing_one() {
+        use crate::converters::CoremlMlProgramConverter;
+        use crate::mlcontextoptions::CoremlFloat16Precision::Native;
+        use crate::protos::coreml::specification::Model;
+        use prost::Message;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let built = chain(
+            &mut builder,
+            DataType::Uint8,
+            DataType::Float16,
+            Some(128.0),
+            [64, 2, 32],
+        );
+        let (_, y) = projection(&mut builder, built.weight, 64);
+        let outputs = MLNamedOperands::from([("y", y)]);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+
+        let borrowed = CoremlMlProgramConverter
+            .convert_with_carried_state(&graph, Native, &[])
+            .unwrap();
+        let mut owned = graph.clone();
+        let (data, weights) = CoremlMlProgramConverter
+            .convert_owned(&mut owned, Native, &[])
+            .unwrap();
+        // prost serializes the MIL argument maps in HashMap order: compare decoded models.
+        assert_eq!(
+            Model::decode(data.as_slice()).unwrap(),
+            Model::decode(borrowed.data.as_slice()).unwrap()
+        );
+        assert_eq!(
+            weights.map(|blob| blob.into_bytes().unwrap()),
+            borrowed.weights_data
+        );
+        assert!(operation_types(&owned).contains(&"dequantizeLinear"));
+        assert!(!operation_types(&graph).contains(&"dequantizeLinear"));
+    }
+
     #[test]
     fn the_lowering_emits_one_compressed_constant() {
         let (rows, groups, width) = (64u32, 2u32, 32u32);
