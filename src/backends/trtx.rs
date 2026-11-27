@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
-use std::rc::Rc;
 use std::sync::LazyLock;
 
 use cudarc::driver::CudaSlice;
@@ -683,7 +682,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         }
         let exec = engine
-            .create_execution_context_with_config(Rc::new(runtime_config))
+            .create_execution_context_with_config(Arc::new(runtime_config))
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
         MLGraph::new(
