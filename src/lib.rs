@@ -105,6 +105,7 @@
 //! | `dynamic-inputs` | Enable ONNX/CoreML conversion of [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
 //! | `zstd-cache-compression` | Compress on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
+//! | `native-benches` | Build native benchmarks (`weights_io`); omit for wasm32 checks |
 //! | `capi` | C API exports and logging support |
 //! | `wpt-embed-corpus` | Embed the WPT corpus for targets without filesystem access |
 //! | `webnn-wpt-tests` | Browser WPT tests, including the embedded corpus |

@@ -363,7 +363,12 @@ fn match_chain(graph: &GraphInfo, uses: &Uses, anchor: usize) -> Option<Chain> {
             if stored.kind != OperandKind::Constant
                 || !matches!(stored_type, DataType::Int8 | DataType::Uint8)
                 || typed_shape(graph, *data, stored_type)? != matrix
-                || graph.constant_operand_ids_to_handles.get(data)?.data.len()
+                || graph
+                    .constant_operand_ids_to_handles
+                    .get(data)?
+                    .as_owned_data()?
+                    .data
+                    .len()
                     != (rows as usize).checked_mul(columns as usize)?
             {
                 return None;
@@ -412,7 +417,11 @@ fn zero_point(
     if shape.len() > 2 || shape.iter().any(|&size| size != 1) {
         return None;
     }
-    let data = &graph.constant_operand_ids_to_handles.get(&zero)?.data;
+    let data = &graph
+        .constant_operand_ids_to_handles
+        .get(&zero)?
+        .as_owned_data()?
+        .data;
     let [value] = *read_floats(data, float_type)?.as_slice() else {
         return None;
     };
@@ -515,7 +524,11 @@ fn scale_values(
         operations.push(index);
     };
     let source_type = graph.operand(source)?.descriptor.data_type;
-    let data = &graph.constant_operand_ids_to_handles.get(&source)?.data;
+    let data = &graph
+        .constant_operand_ids_to_handles
+        .get(&source)?
+        .as_owned_data()?
+        .data;
     if data.len() != count.checked_mul(source_type.bytes_per_element())? {
         return None;
     }
@@ -571,7 +584,7 @@ pub(crate) fn apply(graph: &mut GraphInfo, chains: Vec<Chain>) -> BlockwiseConst
             });
             graph
                 .constant_operand_ids_to_handles
-                .insert(id, ConstantData { data, label: None });
+                .insert(id, ConstantData { data, label: None }.into());
             id
         };
         let scale = constant("scale", chain.float_type, chain.scale);
@@ -877,7 +890,10 @@ mod tests {
     }
 
     fn payload(graph: &GraphInfo, id: u32) -> &[u8] {
-        &graph.constant_operand_ids_to_handles[&id].data
+        &graph.constant_operand_ids_to_handles[&id]
+            .as_owned_data()
+            .unwrap()
+            .data
     }
 
     fn shape_of(graph: &GraphInfo, id: u32) -> (DataType, Vec<u32>) {
@@ -1416,6 +1432,10 @@ mod tests {
         graph
             .constant_operand_ids_to_handles
             .get_mut(&built.scale.rustnn_index())
+            .map(|constant| match constant {
+                crate::graph::ConstantReference::OwnedData(data) => data,
+                _ => panic!("expected owned constant"),
+            })
             .unwrap()
             .data
             .truncate(2 * 3 * 2);
@@ -1462,6 +1482,10 @@ mod tests {
         short
             .constant_operand_ids_to_handles
             .get_mut(&built.data.rustnn_index())
+            .map(|constant| match constant {
+                crate::graph::ConstantReference::OwnedData(data) => data,
+                _ => panic!("expected owned constant"),
+            })
             .unwrap()
             .data
             .pop();

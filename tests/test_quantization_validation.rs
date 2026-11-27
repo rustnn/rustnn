@@ -79,7 +79,7 @@ fn builder_result_with_options(
             builder.input(
                 operand.name.as_ref().unwrap(),
                 &MLOperandDescriptor::new(
-                    MLOperandDataType::try_from(operand.descriptor.data_type).unwrap(),
+                    operand.descriptor.data_type,
                     operand
                         .descriptor
                         .static_or_max_shape()

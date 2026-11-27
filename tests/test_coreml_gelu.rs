@@ -92,7 +92,8 @@ fn convolution_graph(gelu_filter: bool) -> GraphInfo {
                     .flat_map(|&v| half::f16::from_f32(v).to_bits().to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),

@@ -96,13 +96,13 @@ fn gather_graph(
     if let Some(indices) = constant_indices {
         graph.constant_operand_ids_to_handles.insert(
             1,
-            ConstantData {
+            rustnn::graph::ConstantReference::OwnedData(ConstantData {
                 data: indices
                     .iter()
                     .flat_map(|value| value.to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }),
         );
     }
     graph

@@ -234,16 +234,22 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
 
     // A blob that does not match its descriptor would be truncated (f16) or panic in
     // `bytemuck` (f32) once the dequantizer indexes it.
-    for (&id, constant) in graph.constant_operand_ids_to_handles.iter() {
+    for &id in graph.constant_operand_ids_to_handles.keys() {
+        let data = graph
+            .constant_data(id)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: e.to_string(),
+            })?;
         let Some(expected) = graph.operands[id as usize].descriptor.byte_length() else {
             continue; // Dynamic shape: nothing to check against.
         };
-        if constant.data.len() != expected {
+        if data.len() != expected {
             return Err(GraphError::ConversionFailed {
                 format: "cann".into(),
                 reason: format!(
                     "constant operand {id} has {} byte(s) but its descriptor needs {expected}",
-                    constant.data.len()
+                    data.len()
                 ),
             });
         }
@@ -450,7 +456,12 @@ mod adapter {
         if let Some(&handle) = cache.get(&mask_id) {
             return Ok(handle);
         }
-        let data = &graph.constant_operand_ids_to_handles[&mask_id].data;
+        let data = graph
+            .constant_data(mask_id)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: e.to_string(),
+            })?;
         let descriptor = &graph.operands[mask_id as usize].descriptor;
         let s = descriptor_dims(descriptor);
         let shape = [1i64, 1, s[1], s[2]];
@@ -1105,7 +1116,7 @@ mod adapter {
         }
         let dtype = operand.descriptor.data_type;
         let bpe = bytes_per_element(dtype)?;
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         // The const loop emits 8-bit constants as f32 (the DDK Const kernel
         // rejects int8/uint8), so re-emit them the same way here.
@@ -1179,7 +1190,7 @@ mod adapter {
         if operand.kind != crate::graph::OperandKind::Constant {
             return None;
         }
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, operand.descriptor.data_type)?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         if offsets.iter().any(|&offset| offset >= source.len()) {
@@ -1212,7 +1223,7 @@ mod adapter {
         if operand.kind != crate::graph::OperandKind::Constant {
             return None;
         }
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, operand.descriptor.data_type)?;
         let offsets = const_broadcast_offsets(target_dims, reshape_dims)?;
         if offsets.iter().any(|&offset| offset >= source.len()) {
@@ -1245,7 +1256,7 @@ mod adapter {
             return None;
         }
         let dtype = operand.descriptor.data_type;
-        let data = &graph.constant_operand_ids_to_handles.get(&id)?.data;
+        let data = graph.constant_data(id).ok()?;
         let source = const_values_f32(data, dtype)?;
         let dims = descriptor_dims(&operand.descriptor);
         let rank = dims.len();
@@ -1606,10 +1617,11 @@ mod adapter {
     // mul(cast(int const), scale), cast(int const), or int/float const.
     fn resolve_dequantized_f32(graph: &GraphInfo, id: u32) -> Option<(Vec<f32>, Vec<i64>)> {
         // Direct constant.
-        if let Some(cd) = graph.constant_operand_ids_to_handles.get(&id) {
+        if graph.constant_operand_ids_to_handles.contains_key(&id) {
+            let data = graph.constant_data(id).ok()?;
             let desc = &graph.operands[id as usize].descriptor;
             let dims = descriptor_dims(desc);
-            return Some((plain_dequantize_f32(&cd.data, desc.data_type), dims));
+            return Some((plain_dequantize_f32(data, desc.data_type), dims));
         }
         // cast(x) -> x.
         for op in &graph.operations {
@@ -1911,11 +1923,10 @@ mod adapter {
         }
         if dtype == DataType::Float16
             && operand.kind == crate::graph::OperandKind::Constant
-            && let Some(data) = graph.constant_operand_ids_to_handles.get(&id)
-            && data.data.len() % 2 == 0
+            && let Ok(data) = graph.constant_data(id)
+            && data.len() % 2 == 0
         {
             let values: Vec<u8> = data
-                .data
                 .chunks_exact(2)
                 .flat_map(|pair| {
                     half::f16::from_le_bytes([pair[0], pair[1]])
@@ -2228,7 +2239,13 @@ mod adapter {
             .collect();
         const_ids.sort_unstable();
         for const_id in const_ids {
-            let constant_data = &graph.constant_operand_ids_to_handles[&const_id];
+            let constant_data =
+                graph
+                    .constant_data(const_id)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: e.to_string(),
+                    })?;
             let name = CString::new(
                 graph.operands[const_id as usize]
                     .name
@@ -2257,7 +2274,6 @@ mod adapter {
             let (const_data, const_dtype) = match desc.data_type {
                 DataType::Int8 => (
                     constant_data
-                        .data
                         .iter()
                         .flat_map(|&b| (b as i8 as f32).to_le_bytes())
                         .collect::<Vec<u8>>(),
@@ -2265,13 +2281,12 @@ mod adapter {
                 ),
                 DataType::Uint8 => (
                     constant_data
-                        .data
                         .iter()
                         .flat_map(|&b| (b as f32).to_le_bytes())
                         .collect::<Vec<u8>>(),
                     DataType::Float32,
                 ),
-                _ => (constant_data.data.clone(), desc.data_type),
+                _ => (constant_data.to_vec(), desc.data_type),
             };
             let value_name = CString::new("value").unwrap();
             let format = 0_i32; // FORMAT_NCHW for all const tensors
