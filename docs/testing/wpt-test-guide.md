@@ -390,7 +390,7 @@ A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a P
 
 **TRTX backend skipped** — TensorRT is not available (no GPU, missing drivers, or `trtx-runtime` feature not enabled). Only `onnx` trials will run.
 
-**`No WPT backends available`** (exit code 2) — a backend feature is compiled in but none of its runtimes could be created; check `ORT_DYLIB_PATH` or the TensorRT library. A build without any backend feature (plain `cargo test`) prints a notice and exits successfully instead, so the harness does not break the default test run.
+**`No WPT backends available`** (exit code 2) — a backend feature is compiled in but none of its runtimes could be created. A backend named by `WPT_BACKEND` prints `[WPT] backend <name> is unavailable: <error>` first; check `ORT_DYLIB_PATH`, the TensorRT library, or the LiteRT libraries that `litert-sys` downloads. A build without any backend feature (plain `cargo test`) prints a notice and exits successfully instead, so the harness does not break the default test run.
 
 **Parse warnings (`file_errors`)** — Some WPT files may fail to parse; warnings are logged but do not fail the run.
 

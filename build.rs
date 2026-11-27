@@ -99,6 +99,23 @@ fn build_coreml_shim() {
     // The shim's `@catch (...)` pulls in the C++ runtime (__cxa_begin_catch,
     // std::terminate); Rust links with -nodefaultlibs, so request libc++.
     println!("cargo:rustc-link-lib=dylib=c++");
+
+    // The `block` crate links `BlocksRuntime` on every target except macOS and iOS. On
+    // tvOS, watchOS and visionOS the blocks runtime is part of libSystem and no such library
+    // exists. Put an empty one on the search path so the link resolves.
+    if !matches!(
+        env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos" | "ios")
+    ) {
+        let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+        let stub = out_dir.join("blocks_runtime_stub.c");
+        fs::write(&stub, "typedef int rustnn_blocks_runtime_stub;\n").expect("write stub");
+        cc::Build::new()
+            .file(&stub)
+            .cargo_metadata(false)
+            .compile("BlocksRuntime");
+        println!("cargo:rustc-link-search=native={}", out_dir.display());
+    }
 }
 
 /// Hash `source_files` into `OUT_DIR/<output_name>` so a backend can key its on-disk cache on

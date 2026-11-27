@@ -9,6 +9,7 @@
 | `flatc` | Required for `litert-runtime` (TFLite schema). CI downloads the flatbuffers release binary; macOS `brew install flatbuffers` |
 | Node.js | WPT corpus fetch and evaluation (`scripts/fetch_wpt.mjs`, `scripts/wpt_bridge/`) |
 | Python 3 | MkDocs (`pip install -r docs/requirements.txt`) and the generator scripts in `scripts/` |
+| Xcode | iOS and watchOS device runs: `scripts/apple_device_app.py` links an example built as a static library with `scripts/apple_device_host.swift`, signs the app and drives the device with `devicectl`; see [SmolLM2 on Apple devices](../user-guide/smollm2-on-apple-devices.md) |
 | libclang | `trtx-runtime` and `make docs-api`: the `trtx-sys` crate generates bindings with autocxx, which needs libclang 21 or older; set `LIBCLANG_PATH` if it is not found or a newer libclang is the default (CI installs `libclang-21-dev` and sets `LIBCLANG_PATH=/usr/lib/llvm-21/lib`) |
 | Doxygen and cbindgen | Required for the documentation website and `make docs-capi`; install Doxygen with your package manager and cbindgen with `cargo install cbindgen --locked` |
 

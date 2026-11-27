@@ -299,6 +299,7 @@ libtest-mimic = "0.8.2"
 pretty_env_logger = "0.5.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+libc = "0.2"
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 
@@ -319,6 +320,17 @@ required-features = ["native-examples"]
 name = "smollm_mlcontext"
 path = "examples/smollm_mlcontext.rs"
 required-features = ["native-examples"]
+
+[[example]]
+name = "smollm2_coreml"
+path = "examples/smollm2_coreml.rs"
+required-features = ["native-examples", "coreml-runtime"]
+
+[[example]]
+name = "smollm2_coreml_device"
+path = "examples/smollm2_coreml_device.rs"
+crate-type = ["staticlib"]
+required-features = ["native-examples", "coreml-runtime"]
 
 [lib]
 name = "rustnn"
