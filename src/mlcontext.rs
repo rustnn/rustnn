@@ -130,6 +130,20 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
     /*async*/
     fn build(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>>;
+
+    /// Build a graph whose constants in `urls` have no bytes in `graph` yet.
+    ///
+    /// The default is the fallback for backends without late binding of weights: every URL
+    /// constant is fetched into host memory first. A backend that can compile without weights
+    /// overrides this and decides itself when the bytes are pulled.
+    fn build_with_url_constants(
+        &mut self,
+        mut graph: GraphInfo,
+        urls: crate::weights::UrlConstants,
+    ) -> Result<MLGraph<'context>> {
+        urls.materialize_into(&mut graph)?;
+        self.build(graph)
+    }
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -634,6 +648,8 @@ pub struct MLContext<'context> {
     pub(crate) device: BackendDevice,
     pub(crate) bypass_allowed_data_types_checks: bool,
     pub(crate) allow_int4_uint4: bool,
+    /// Fetch options that builders of this context start with (`RustNNOptions::url_fetch`).
+    pub(crate) url_fetch_options: crate::weights::UrlFetchOptions,
 }
 
 impl<'context> MLContext<'context> {
@@ -695,6 +711,7 @@ impl<'context> MLContext<'context> {
             device,
             bypass_allowed_data_types_checks: options.bypass_allowed_data_types_checks,
             allow_int4_uint4: options.allow_int4_uint4,
+            url_fetch_options: options.rustnn_options.url_fetch.clone(),
         })
     }
 
@@ -715,6 +732,7 @@ impl<'context> MLContext<'context> {
             device,
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
         })
     }
     /// Whether the selected device is a GPU or NPU rather than a CPU.
@@ -961,6 +979,7 @@ mod test {
         let mut context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             // All mutation methods panic, so reaching it would fail this test.
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
@@ -1015,6 +1034,7 @@ mod test {
         let mut context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
@@ -1038,6 +1058,7 @@ mod test {
         let context = MLContext {
             bypass_allowed_data_types_checks: false,
             allow_int4_uint4: false,
+            url_fetch_options: Default::default(),
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,

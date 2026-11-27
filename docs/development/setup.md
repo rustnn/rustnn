@@ -30,7 +30,7 @@ The default build needs no native runtime beyond the prerequisites above.
 | `cann-runtime` | An OHOS/Ascend HiAI environment and `libcann_shim.so` (or `CANN_SHIM_PATH`) |
 | `webnn-runtime` with `webnn-wpt-tests` | The `wasm32-unknown-unknown` target; browser tests additionally need `wasm-pack`, Node.js, Chrome/Chromium, `curl`, and `unzip` |
 
-The optional features `dynamic-inputs`, `native-examples`, `pollster`, and
+The optional features `dynamic-inputs`, `native-examples`, `pollster`, `url-weights-http`, and
 `zstd-cache-compression` do not add external runtime prerequisites.
 
 Defaults enable `onnx-converter` and `burn-cpu-runtime`. Each runtime includes its

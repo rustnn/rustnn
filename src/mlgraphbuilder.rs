@@ -20,6 +20,7 @@
 //! ([`MLGraphBuilder::rustnn_save_webnn`]).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytemuck::NoUninit;
 use log::{debug, trace};
@@ -52,6 +53,9 @@ use crate::shape_inference::{
     infer_transpose_shape_dimensions, infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
 use crate::webnn_json::to_graph_json;
+use crate::weights::{
+    DefaultWeightsFetcher, UrlConstants, UrlFetchOptions, UrlRef, WeightsFetcher,
+};
 use crate::{DataType, Operand, OperandDescriptor, OperandKind, Operation};
 use crate::{
     GraphInfo,
@@ -71,6 +75,10 @@ pub struct MLGraphBuilder<'context, 'builder> {
     backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
 
     recorder: Option<GraphRecorder>,
+
+    /// Resolves the URL constants of this graph; see [`Self::rustnn_constant_from_url`].
+    weights_fetcher: Arc<dyn WeightsFetcher>,
+    url_fetch_options: UrlFetchOptions,
 }
 
 #[derive(Debug)]
@@ -2064,13 +2072,16 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         MLGraphBuilder {
             backend: Box::new(UncompiledBackendBuilder),
             recorder: Some(GraphRecorder::new()),
+            weights_fetcher: Arc::new(DefaultWeightsFetcher),
+            url_fetch_options: UrlFetchOptions::default(),
         }
     }
 
     /// Record a backend-independent graph with context data type policies.
     ///
-    /// Only allowed-type bypass and packed 4-bit settings are used; this creates
-    /// no backend. The other contracts of [`Self::new_uncompiled`] apply.
+    /// Only the allowed-type bypass, the packed 4-bit setting and the URL fetch options
+    /// (`RustNNOptions::url_fetch`) are used; this creates no backend. The other contracts
+    /// of [`Self::new_uncompiled`] apply.
     pub fn new_uncompiled_with_options(
         options: &crate::mlcontextoptions::MLContextOptions,
     ) -> MLGraphBuilder<'static, 'static> {
@@ -2081,6 +2092,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                     .with_bypass_allowed_data_types_checks(options.bypass_allowed_data_types_checks)
                     .with_allow_int4_uint4(options.allow_int4_uint4),
             ),
+            weights_fetcher: Arc::new(DefaultWeightsFetcher),
+            url_fetch_options: options.rustnn_options.url_fetch.clone(),
         }
     }
 
@@ -2098,6 +2111,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                     .with_bypass_allowed_data_types_checks(context.bypass_allowed_data_types_checks)
                     .with_allow_int4_uint4(context.allow_int4_uint4),
             ),
+            weights_fetcher: Arc::new(DefaultWeightsFetcher),
+            url_fetch_options: context.url_fetch_options.clone(),
         })
     }
 
@@ -2112,7 +2127,16 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     /// Serialize the in-progress graph (with outputs marked) as `.webnn` text for debugging.
+    ///
+    /// Returns `None` when the graph was already built, when `outputs` is empty or names an
+    /// operand that cannot be an output (unknown, an input or a constant), when the graph has
+    /// URL constants ([`Self::rustnn_constant_from_url`]), whose bytes are not in host memory,
+    /// or when it cannot be serialized.
     pub fn rustnn_webnn_text_for_outputs(&self, outputs: &MLNamedOperands) -> Option<String> {
+        // URL constants have no bytes to inline; the debug text is unavailable for such graphs.
+        if self.recorder.as_ref()?.has_url_constants() {
+            return None;
+        }
         let mut recorder = self.recorder.as_ref()?.clone();
         if outputs.is_empty() {
             return None;
@@ -2141,6 +2165,10 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     ///
     /// Int4 and Uint4 constants use the shared packed-U8 SafeTensors extension; see
     /// the [graph-file guide](crate::loader).
+    ///
+    /// A graph with URL constants ([`Self::rustnn_constant_from_url`]) cannot be saved, because
+    /// their bytes are not in host memory: the call returns
+    /// [`GraphBuilderError::UrlConstantsNotMaterialized`].
     ///
     /// Like [`Self::build`], this takes the graph's `outputs` to finalize which operands are graph
     /// outputs, but it borrows the builder read-only: the output names are handed to the exporter
@@ -2175,6 +2203,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .recorder
             .as_ref()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        if graph.has_url_constants() {
+            return Err(GraphBuilderError::UrlConstantsNotMaterialized {
+                operation: "rustnn_save_webnn",
+            }
+            .into());
+        }
 
         // Build the operand-id -> output-name override for the exporter, validating as we go.
         // Two names for the same operand (aliasing) would collide here, so we reject it like
@@ -2230,15 +2264,48 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         &mut self,
         outputs: &'_ MLNamedOperands,
     ) -> crate::error::Result<MLGraph<'context>> {
-        let graph = self.finish_graph_info(outputs)?;
-        self.backend.build(graph)
+        let (graph, sources) = self.finish_recording(outputs)?;
+        if sources.is_empty() {
+            return self.backend.build(graph);
+        }
+        // The backend decides when the bytes are pulled. Backends without late binding of
+        // weights use the default, which fetches everything before compiling.
+        self.backend.build_with_url_constants(
+            graph,
+            UrlConstants {
+                sources,
+                fetcher: Arc::clone(&self.weights_fetcher),
+                options: self.url_fetch_options.clone(),
+            },
+        )
     }
 
     /// Finalize the recorded graph and return it without compiling it for a runtime backend.
+    ///
+    /// URL constants ([`Self::rustnn_constant_from_url`]) are fetched into host memory here, so
+    /// the returned graph is self-contained like any other [`GraphInfo`].
     pub fn finish_graph_info(
         &mut self,
         outputs: &'_ MLNamedOperands,
     ) -> crate::error::Result<GraphInfo> {
+        let (mut graph, sources) = self.finish_recording(outputs)?;
+        if !sources.is_empty() {
+            UrlConstants {
+                sources,
+                fetcher: Arc::clone(&self.weights_fetcher),
+                options: self.url_fetch_options.clone(),
+            }
+            .materialize_into(&mut graph)?;
+        }
+        Ok(graph)
+    }
+
+    /// Marks the outputs and returns the recorded graph together with its URL constants, which
+    /// have no entry in `constant_operand_ids_to_handles` yet.
+    fn finish_recording(
+        &mut self,
+        outputs: &'_ MLNamedOperands,
+    ) -> crate::error::Result<(GraphInfo, HashMap<u32, UrlRef>)> {
         trace!("Trying to build graph for outputs {outputs:?}");
         // spec: If outputs is empty, then return a new promise in realm rejected with a TypeError.
         if outputs.is_empty() {
@@ -2284,12 +2351,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             });
         }
 
+        let sources = graph.take_url_constants();
         let graph = graph.into_graph()?;
         tracing::info!(
             operands = graph.operands.len(),
-            operations = graph.operations.len()
+            operations = graph.operations.len(),
+            url_constants = sources.len()
         );
-        Ok(graph)
+        Ok((graph, sources))
     }
 
     /// Debug tool to check operand shape
@@ -2425,6 +2494,78 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             crate::ConstantData { data, label: None },
         );
         Ok(MLOperand { id: id as usize })
+    }
+
+    /// Register a constant whose bytes are pulled from a URL when the graph is built.
+    ///
+    /// rustnn extension prototyping the pull model from the discussion in
+    /// <https://github.com/webmachinelearning/webnn/issues/901>: the analogue of the sketch
+    /// `builder.constant(new Request(url, {headers: {Range: ...}}))`, with the operand
+    /// descriptor passed explicitly. `source` names a resource and a byte range holding the
+    /// little-endian, packed bytes that [`Self::constant_from_bytes`] would take.
+    ///
+    /// This call performs no I/O. It returns [`GraphBuilderError::WrongConstantSize`] when
+    /// `source.len` is not the byte length `descriptor` requires,
+    /// [`GraphBuilderError::UnresolvedConstant`] when `offset + len` overflows, and
+    /// [`GraphBuilderError::GraphAlreadyBuilt`] after `build`. [`Self::build`] and
+    /// [`Self::finish_graph_info`] pull the bytes and fail with
+    /// [`GraphBuilderError::UnresolvedConstant`] when a fetch fails. On TensorRT-RTX the engine
+    /// is built (or loaded from the engine cache) while the ranges are fetched, and constants
+    /// without a consumer are not fetched at all; other backends fetch every URL constant into
+    /// host memory before compiling. See [`crate::weights`] for the rules and the stubs.
+    pub fn rustnn_constant_from_url(
+        &mut self,
+        descriptor: &MLOperandDescriptor,
+        source: UrlRef,
+    ) -> crate::error::Result<MLOperand> {
+        let required_size = descriptor.rustnn_required_bytes();
+        if source.offset.checked_add(source.len).is_none() {
+            return Err(GraphBuilderError::UnresolvedConstant {
+                operand: u32::MAX,
+                url: source.url,
+                reason: "offset + len overflows".to_string(),
+            }
+            .into());
+        }
+        if usize::try_from(source.len) != Ok(required_size) {
+            return Err(GraphBuilderError::WrongConstantSize {
+                descriptor: descriptor.clone(),
+                required_size,
+                provided_size: usize::try_from(source.len).unwrap_or(usize::MAX),
+            }
+            .into());
+        }
+        debug!("Adding URL constant {descriptor:?} from {source:?}");
+        let recorder = self
+            .recorder
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let id = recorder.add_url_constant(None, descriptor.into(), source);
+        Ok(MLOperand { id: id as usize })
+    }
+
+    /// Replace the fetcher that resolves URL constants of this builder (default:
+    /// [`DefaultWeightsFetcher`]). An embedder uses this to route requests through its own
+    /// network stack or cache. rustnn extension.
+    pub fn rustnn_set_weights_fetcher(&mut self, fetcher: Arc<dyn WeightsFetcher>) {
+        self.weights_fetcher = fetcher;
+    }
+
+    /// Replace the fetch options of this builder (default: the
+    /// [`RustNNOptions::url_fetch`](crate::mlcontextoptions::RustNNOptions::url_fetch) of the
+    /// context, or [`UrlFetchOptions::default`] for [`Self::new_uncompiled`]):
+    /// worker threads, the bound on fetched bytes held in host memory, and the batch size in
+    /// which fetched data is bound to the device. The options are replaced as a whole: start
+    /// from a clone of [`Self::rustnn_url_fetch_options`] to keep the other values of the
+    /// context. rustnn extension.
+    pub fn rustnn_set_url_fetch_options(&mut self, options: UrlFetchOptions) {
+        self.url_fetch_options = options;
+    }
+
+    /// The fetch options of this builder: those of the context unless
+    /// [`Self::rustnn_set_url_fetch_options`] replaced them. rustnn extension.
+    pub fn rustnn_url_fetch_options(&self) -> &UrlFetchOptions {
+        &self.url_fetch_options
     }
 
     /// Scalar constant from a single value. Not implemented yet; use

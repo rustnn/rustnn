@@ -6,7 +6,8 @@
 //!
 //! [`MLContextOptions`] carries the two WebNN hints (`powerPreference`, `accelerated`) plus
 //! rustnn extensions: a backend or device hint that overrides automatic selection, and
-//! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`].
+//! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`] and the fetch options of
+//! URL constants.
 //! [`MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`] permits
 //! backend type extensions while recording, with a warning for every bypassed operation.
 //! [`MLContextOptions::with_rustnn_allow_int4_uint4`] permits packed integer
@@ -14,6 +15,7 @@
 //! [`BackendStatistics`] holds optional, backend-specific diagnostic snapshots.
 
 use crate::mlcontext::{Backend, BackendDevice};
+use crate::weights::UrlFetchOptions;
 
 /// WebNN power preference hint. <https://www.w3.org/TR/webnn/#enumdef-mlpowerpreference>
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
@@ -92,7 +94,7 @@ impl MLContextOptions {
         self
     }
 
-    /// Attach backend-specific tuning options.
+    /// Attach backend-specific tuning options and the fetch options of URL constants.
     pub fn with_rustnn_options(mut self, options: RustNNOptions) -> Self {
         self.rustnn_options = options;
         self
@@ -121,7 +123,8 @@ impl MLContextOptions {
     }
 }
 
-/// Backend-specific tuning options (rustnn extension, subject to change).
+/// Backend-specific tuning options and the fetch options of URL constants (rustnn extension,
+/// subject to change).
 ///
 /// The structs are `#[non_exhaustive]`: start from [`RustNNOptions::default`] and set fields.
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
@@ -135,6 +138,16 @@ pub struct RustNNOptions {
     pub ort: OrtOptions,
     /// TensorRT-RTX backend options.
     pub trtx: TrtxOptions,
+    /// How URL constants
+    /// ([`MLGraphBuilder::rustnn_constant_from_url`](crate::mlgraphbuilder::MLGraphBuilder::rustnn_constant_from_url))
+    /// are fetched and bound. `threads` applies to every backend; `max_inflight_bytes` and
+    /// `bind_batch_bytes` are honoured by TensorRT-RTX only, the other backends fetch every
+    /// URL constant into host memory. Every builder created from the context starts with
+    /// these options;
+    /// [`MLGraphBuilder::rustnn_set_url_fetch_options`](crate::mlgraphbuilder::MLGraphBuilder::rustnn_set_url_fetch_options)
+    /// replaces them for one builder. Defaults to [`UrlFetchOptions::default`]: four fetch
+    /// threads, no byte bound, one bind after everything was fetched.
+    pub url_fetch: UrlFetchOptions,
 }
 
 /// Tuning of the TensorRT-RTX backend; see `docs/integration/tensorrt.md`.
@@ -151,6 +164,12 @@ pub struct TrtxOptions {
     pub fail_on_cache_miss: bool,
     /// Lower CPU overhead using CUDA graphs
     pub cuda_graphs: bool,
+    /// Experiment only: build the network with null-weight constant layers (placeholders) for
+    /// refittable host-buffer constants too and refit them after the build, as is done for
+    /// URL constants. Such an engine has an engine cache key of its own. Defaults to `false`.
+    /// The field exists for `examples/url_weights_bench.rs` and can be removed without a
+    /// deprecation period.
+    pub weightless_build: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -161,6 +180,7 @@ impl Default for TrtxOptions {
             runtime_cache: true,
             cuda_graphs: true,
             fail_on_cache_miss: false,
+            weightless_build: false,
         }
     }
 }

@@ -57,6 +57,7 @@ Key modules (`docs/architecture/overview.md` has the full table):
 | `src/shape_inference.rs`, `src/runtime_checks.rs` | Builder shape rules and dispatch-time binding checks |
 | `src/graph.rs` | `GraphInfo`, `Operand`, `Dimension` (static or dynamic), `DataType`, 4-bit packing |
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import and export through the `webnn-graph` crate, `.safetensors` weights |
+| `src/weights.rs` | URL constants (prototype of the pull model for weights): `UrlRef`, `WeightsFetcher`, `DefaultWeightsFetcher`, `UrlFetchOptions`, and the fetch worker pool that the backends use |
 | `src/converters/{onnx,coreml_mlprogram,trtx,litert,cann,webnn}.rs` | Lowering of `GraphInfo` to each backend format; `ConverterRegistry` |
 | `src/backends/{ort,trtx,coreml,litert,cann}.rs`, `src/backends/caching.rs` | Backend contexts implementing the crate-private `MLBackendContext` and `MLBackendBuilder` traits; on-disk caches |
 | `cli/` | CLI workspace member (`rustnn-cli`): conversion registry, runtime discovery, MLContext execution |

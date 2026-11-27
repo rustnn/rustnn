@@ -28,8 +28,11 @@ loads, validates and converts stored graphs without a context.
    the device handles and the tensors.
 2. **Recording.** `MLGraphBuilder` appends operands and `Operation` variants to a `GraphInfo`.
    Every method runs shape inference (`src/shape_inference.rs`) for its outputs, so the graph is
-   fully annotated at all times. Constants are stored as bytes in the graph.
-3. **Build.** `build` marks the outputs and hands the `GraphInfo` to the backend builder, which
+   fully annotated at all times. Constants are stored as bytes in the graph, except URL
+   constants (`rustnn_constant_from_url`), which are recorded as a URL and a byte range.
+3. **Build.** `build` marks the outputs and hands the `GraphInfo` to the backend builder,
+   together with the URL constants when the graph has any (the backend decides when their
+   bytes are fetched, see `src/weights.rs`). The backend builder
    calls the backend's converter and compiles the result once: an ONNX Runtime session, a
    TensorRT engine with refittable weights, a compiled CoreML model, a LiteRT interpreter or a
    HiAI model. The `MLGraph` keeps the compiled artifact and the named I/O descriptors.
@@ -52,6 +55,7 @@ loads, validates and converts stored graphs without a context.
 | `src/graph.rs` | `GraphInfo`, `Operand`, `OperandDescriptor`, `Dimension`, `DataType` (alias of `MLOperandDataType`), 4-bit packing, hashing for caches |
 | `src/runtime_checks.rs` | Shape checks of tensor bindings at dispatch, including dynamic dimensions |
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import through the `webnn-graph` crate, export, `.safetensors` weights |
+| `src/weights.rs` | URL constants (prototype of the pull model for weights): `UrlRef`, `WeightsFetcher`, `DefaultWeightsFetcher`, `UrlFetchOptions`, and the crate-private fetch worker pool with its byte bound |
 | `src/converters/` | `GraphConverter` trait, `ConverterRegistry`, one converter per format (`onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs` with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs`, `litert.rs`, `cann.rs`, `webnn.rs` for the browser) and shared helpers (`pool2d_shared.rs`, `weight_file_builder.rs`) |
 | `src/backends/` | One module per backend implementing the backend traits; `caching.rs` for on-disk caches; `webnn/` with generated browser bindings; `mod.rs` with `DisabledContext` aliases for backends that are compiled out |
 | `cli/` | Separate CLI crate: registry-based conversion and `MLContext` execution |
@@ -68,7 +72,10 @@ A backend implements two crate-private traits from `src/mlcontext.rs`:
 
 - `MLBackendContext`: `create_tensor`, `read_tensor`, `write_tensor`, `dispatch`, tensor
   capacity and resize, and `create_builder`.
-- `MLBackendBuilder`: `build(GraphInfo) -> MLGraph`.
+- `MLBackendBuilder`: `build(GraphInfo) -> MLGraph`, and
+  `build_with_url_constants(GraphInfo, UrlConstants) -> MLGraph`, whose default fetches every
+  URL constant into host memory and calls `build`; a backend that can compile without weights
+  overrides it.
 
 It also implements `ListDevices::list_devices()` for the selection code. Compiled artifacts are
 stored in the `MLBackendGraph` enum. When a backend's feature is off, `backends/mod.rs` aliases

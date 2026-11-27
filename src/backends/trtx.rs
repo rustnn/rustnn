@@ -10,7 +10,7 @@
 #![doc = include_str!("../../docs/integration/tensorrt.md")]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
@@ -50,6 +50,7 @@ use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph, MLNamedTensors};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
+use crate::weights::{FetchStream, UrlConstants, spawn_fetch};
 
 /// Reexport [trtx::dynamically_load_tensorrt] so RustNN users (like pywebnn) can hint to location
 /// of TensorRT library without adding trtx as dependency themselves
@@ -419,6 +420,8 @@ pub(crate) struct TrtxBuilder<'builder> {
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
+    /// `TrtxOptions::weightless_build`.
+    weightless_build: bool,
 }
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -465,6 +468,104 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         &mut self,
         graph: GraphInfo,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
+        self.build_impl(graph, None)
+    }
+
+    /// Pull model: the engine is built (or taken from the cache) with placeholder weights
+    /// while worker threads fetch the URL constants, then the engine is refitted from the
+    /// fetched buffers.
+    fn build_with_url_constants(
+        &mut self,
+        graph: GraphInfo,
+        urls: UrlConstants,
+    ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
+        self.build_impl(graph, Some(urls))
+    }
+}
+
+/// Set the bytes of constant operand `id` on `refitter` from host memory.
+///
+/// # Safety
+///
+/// `data` must stay valid and unchanged until the weight was unset or the refitter dropped.
+unsafe fn set_refit_weights(
+    refitter: &mut Refitter<'_, '_>,
+    graph: &GraphInfo,
+    id: u32,
+    data: &[u8],
+) -> crate::error::Result<()> {
+    let operand = graph.operands.get(id as usize).ok_or_else(|| {
+        GraphBuilderError::InconsistentGraphInfo {
+            message: format!(
+                "Inconsistent GraphInfo: Constant operation with {id} is missing operations"
+            ),
+        }
+    })?;
+    let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
+    let element_count = operand.descriptor.element_count().ok_or_else(|| {
+        GraphBuilderError::InconsistentGraphInfo {
+            message: format!("Constant with dynamic size: id={id} operand={operand:#?}"),
+        }
+    })?;
+    let expected_bytes = element_count * trt_type.size_bits() / 8;
+    if data.len() != expected_bytes {
+        return Err(GraphBuilderError::InconsistentGraphInfo {
+            message: format!(
+                "Weight size mismatch: expected {expected_bytes} bytes, got {} bytes",
+                data.len()
+            ),
+        }
+        .into());
+    }
+    let weight_name = format!("{id}");
+    trace!("Trying to refit weight {weight_name}");
+    unsafe {
+        refitter.set_named_weights_with_location(
+            &weight_name, // TODO: add API to name weights to trtx
+            trtx::trtx_sys::Weights {
+                type_: trt_type.into(),
+                values: data.as_ptr() as *const std::ffi::c_void,
+                count: element_count as i64,
+            },
+            // TODO: register and upload during build, refit with device location
+            trtx::trtx_sys::nvinfer1::TensorLocation::kHOST,
+        )
+    }
+    .map_err(|source| {
+        let consumers: Vec<String> = graph
+            .operations
+            .iter()
+            .filter(|op| op.all_input_operands().contains(&id))
+            .map(|op| op.op_type().to_string())
+            .collect();
+        TrtxError::ConstantRefitFailed {
+            operand_id: id,
+            operand: operand.clone(),
+            consumers,
+            source,
+        }
+    })?;
+    Ok(())
+}
+
+/// Counters of one pull-model build, logged at `info` level.
+#[derive(Debug, Default)]
+struct UrlRefitStats {
+    eager: usize,
+    deferred: usize,
+    skipped_unused: usize,
+    refit_calls: usize,
+    peak_held_bytes: usize,
+    total_bytes: usize,
+}
+
+impl<'context> TrtxBuilder<'context> {
+    fn build_impl(
+        &mut self,
+        mut graph: GraphInfo,
+        urls: Option<UrlConstants>,
+    ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
+        let build_start = std::time::Instant::now();
         let mut engine_bytes: Option<HostMemoryOrVec> = None;
         let mut hash_key: Option<String> = None;
 
@@ -476,6 +577,73 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         // influence the engine's outputs.
         let unused_constants =
             crate::converters::TrtxConverter::unused_constant_operand_ids(&graph);
+
+        // URL constants. The ones TensorRT bakes into the engine are needed by value before
+        // the network is built: fetch them now. The rest is fetched on worker threads while
+        // the engine is built or read from the cache. Constants without a consumer are never
+        // fetched.
+        let mut stats = UrlRefitStats::default();
+        // Constants that have no bytes in `graph` while the network is built.
+        let mut placeholders: HashSet<u32> = HashSet::new();
+        // Constants fetched in the background and refitted after the engine exists.
+        let mut deferred: Vec<u32> = Vec::new();
+        let mut fetch: Option<FetchStream> = None;
+        if let Some(urls) = urls.as_ref() {
+            let mut eager: Vec<u32> = Vec::new();
+            for &id in urls.sources.keys() {
+                if unused_constants.contains(&id) {
+                    placeholders.insert(id);
+                    stats.skipped_unused += 1;
+                } else if non_refittable_constants.contains(&id) {
+                    eager.push(id);
+                } else {
+                    placeholders.insert(id);
+                    deferred.push(id);
+                }
+            }
+            eager.sort_unstable();
+            for id in eager {
+                let data = urls.fetch_one(id)?;
+                let label = urls.sources.get(&id).and_then(|s| s.label.clone());
+                graph
+                    .constant_operand_ids_to_handles
+                    .insert(id, crate::ConstantData { data, label });
+                stats.eager += 1;
+            }
+            stats.deferred = deferred.len();
+            fetch = Some(spawn_fetch(
+                urls,
+                deferred.clone(),
+                urls.options.effective_max_inflight_bytes(),
+            ));
+        }
+        // Experiment switch (`TrtxOptions::weightless_build`): build the network without the
+        // bytes of host-buffer constants as well (they stay in `graph` and are refitted as
+        // usual). It separates the effect of the weightless build from the effect of pulling
+        // the bytes.
+        if self.weightless_build {
+            for &id in graph.constant_operand_ids_to_handles.keys() {
+                if !non_refittable_constants.contains(&id) && !unused_constants.contains(&id) {
+                    placeholders.insert(id);
+                }
+            }
+        }
+        // An engine built from placeholders is keyed apart from one built from host weights,
+        // and by which constants are placeholders: lowerings that test whether a constant's
+        // bytes are present take the tensor branch for a placeholder, so two networks of the
+        // same graph can differ. The key does not depend on where the bytes come from.
+        let engine_suffix: Cow<'_, str> = if placeholders.is_empty() {
+            Cow::Borrowed(TRTX_SUFFIX_ENGINES.as_str())
+        } else {
+            let mut ids: Vec<u32> = placeholders.iter().copied().collect();
+            ids.sort_unstable();
+            let bytes: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+            Cow::Owned(format!(
+                "{}_ph{:016x}",
+                TRTX_SUFFIX_ENGINES.as_str(),
+                seahash::hash(&bytes)
+            ))
+        };
 
         // no caching for non_refittable_constants for now, non_refittable_constants will end up in
         // the engine and potentially grow our cache to much.
@@ -490,7 +658,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             })
         {
             let key = graph.hash_identifier(
-                &TRTX_SUFFIX_ENGINES,
+                &engine_suffix,
                 WeightsToHash::Some(&non_refittable_constants),
             );
 
@@ -518,8 +686,16 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .unwrap()
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
-            crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
-            for constant_id in graph.constant_operand_ids_to_handles.keys() {
+            crate::converters::TrtxConverter::build_network_with_placeholders(
+                &graph,
+                &mut network,
+                &placeholders,
+            )?;
+            for constant_id in graph
+                .constant_operand_ids_to_handles
+                .keys()
+                .chain(deferred.iter())
+            {
                 if !non_refittable_constants.contains(constant_id)
                     && !unused_constants.contains(constant_id)
                 {
@@ -541,6 +717,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             }
             engine_bytes = Some(host_mem.into());
         }
+        let engine_ready = build_start.elapsed();
 
         let engine_bytes =
             engine_bytes.expect("already got cached engine or tried building engine");
@@ -557,7 +734,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let mut key = graph.hash_identifier(
                 &format!(
                     "{}_{:x}",
-                    TRTX_SUFFIX_ENGINES.as_str(),
+                    engine_suffix,
                     self.config.lock().unwrap().flags()
                 ),
                 WeightsToHash::Some(&non_refittable_constants),
@@ -574,73 +751,123 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             }
         }
 
+        // Fetched URL-constant buffers referenced by the refitter. Declared before the refitter
+        // so that it is dropped first on every path, while the buffers are still alive.
+        let mut held: Vec<Vec<u8>> = Vec::new();
         // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
         let mut refitter = Refitter::new(&engine, &LOGGER)?;
 
+        // Names set on the refitter and not yet applied by a refit.
+        let mut pending: Vec<String> = Vec::new();
+        // Every weight name that was supplied; checked against the engine below.
+        let mut supplied: HashSet<String> = HashSet::new();
         for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
             if non_refittable_constants.contains(id) || unused_constants.contains(id) {
                 continue;
             }
-            let operand = graph.operands.get(*id as usize);
-            if let Some(operand) = operand.as_ref() {
-                let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let element_count = operand.descriptor.element_count().ok_or_else(|| {
-                    std::convert::Into::<crate::error::Error>::into(
-                        GraphBuilderError::InconsistentGraphInfo {
-                            message: format!(
-                                "Constant with dynamic size: id={id} operand={operand:#?}"
-                            ),
-                        },
-                    )
-                })?;
-                let expected_bytes = element_count * trt_type.size_bits() / 8;
-                if constant.data.len() != expected_bytes {
-                    return Err(GraphBuilderError::InconsistentGraphInfo {
-                        message: format!(
-                            "Weight size mismatch: expected {expected_bytes} bytes, got {} bytes",
-                            constant.data.len()
-                        ),
+            // SAFETY: `graph` owns the bytes and outlives `refitter`.
+            unsafe { set_refit_weights(&mut refitter, &graph, *id, &constant.data)? };
+            pending.push(format!("{id}"));
+            supplied.insert(format!("{id}"));
+        }
+
+        if let (Some(urls), Some(mut stream)) = (urls.as_ref(), fetch.take()) {
+            // Without a batch size all fetched buffers stay in host memory until one refit at
+            // the end (peak: the size of all deferred constants). With a batch size the engine
+            // is refitted and the buffers are dropped whenever that many bytes are held.
+            let batch_bytes = urls.options.effective_bind_batch_bytes();
+            let mut held_bytes = 0usize;
+            // Part of `held_bytes` still counted against the fetch budget.
+            let mut unreleased = 0usize;
+            let mut warned_incomplete_group = false;
+            loop {
+                let item = match stream.recv_timeout(std::time::Duration::from_millis(5)) {
+                    Ok(None) => break,
+                    Ok(Some(item)) => Some(item),
+                    Err(()) => None,
+                };
+                if let Some((id, result)) = item {
+                    let data = result.map_err(|e| urls.unresolved(id, e))?;
+                    // SAFETY: `data` moves into `held`, which keeps the heap buffer in place
+                    // until the weight is unset after the refit below; `held` is declared
+                    // before `refitter`, so it also outlives it on error paths.
+                    unsafe { set_refit_weights(&mut refitter, &graph, id, &data)? };
+                    pending.push(format!("{id}"));
+                    supplied.insert(format!("{id}"));
+                    held_bytes += data.len();
+                    unreleased += data.len();
+                    stats.total_bytes += data.len();
+                    stats.peak_held_bytes = stats.peak_held_bytes.max(held_bytes);
+                    held.push(data);
+                    if held_bytes < batch_bytes {
+                        continue;
                     }
-                    .into());
+                } else if !(stream.workers_waiting() && unreleased > 0) {
+                    // Nothing arrived, and no worker waits for budget this loop could free.
+                    continue;
                 }
-                let weight_name = format!("{id}");
-                trace!("Trying to refit weight {weight_name}");
-                unsafe {
-                    refitter.set_named_weights_with_location(
-                        &weight_name, // TODO: add API to name weights to trtx
-                        trtx::trtx_sys::Weights {
-                            type_: trt_type.into(),
-                            values: constant.data.as_ptr() as *const std::ffi::c_void,
-                            count: element_count as i64,
-                        },
-                        // TODO: register and upload during build, refit with device location
-                        trtx::trtx_sys::nvinfer1::TensorLocation::kHOST,
-                    )
-                }
-                .map_err(|source| {
-                    let consumers: Vec<String> = graph
-                        .operations
-                        .iter()
-                        .filter(|op| op.all_input_operands().contains(id))
-                        .map(|op| op.op_type().to_string())
-                        .collect();
-                    TrtxError::ConstantRefitFailed {
-                        operand_id: *id,
-                        operand: (*operand).clone(),
-                        consumers,
-                        source,
+                // Either a batch is complete, or the workers wait for budget held here.
+                // TensorRT refits weights in groups: a refit fails while a group is only
+                // partly supplied, so in that case keep the buffers and let the fetch go on.
+                // The byte bound is then exceeded by the buffers kept here.
+                if refitter.missing_weights(1)?.is_empty() {
+                    refitter.refit_cuda_engine()?;
+                    stats.refit_calls += 1;
+                    for name in pending.drain(..) {
+                        refitter.unset_named_weights(&name);
                     }
-                })?;
-            } else {
+                    held.clear();
+                    held_bytes = 0;
+                } else if !warned_incomplete_group {
+                    warned_incomplete_group = true;
+                    warn!(
+                        "URL constants: a TensorRT weight group is incomplete; keeping {held_bytes} fetched bytes beyond the in-flight bound until it completes"
+                    );
+                }
+                stream.release(unreleased);
+                unreleased = 0;
+            }
+            if !pending.is_empty() || stats.refit_calls == 0 {
+                refitter.refit_cuda_engine()?;
+                stats.refit_calls += 1;
+                for name in pending.drain(..) {
+                    refitter.unset_named_weights(&name);
+                }
+            }
+            held.clear();
+
+            // Batched refits never report weights that were not supplied at all. Check that
+            // every refittable weight of the engine received data.
+            let max_weights = i32::try_from(graph.operands.len()).unwrap_or(i32::MAX);
+            let never_supplied: Vec<String> = refitter
+                .all_weights(max_weights)?
+                .into_iter()
+                .filter(|name| !supplied.contains(name))
+                .collect();
+            if !never_supplied.is_empty() {
                 return Err(GraphBuilderError::InconsistentGraphInfo {
                     message: format!(
-                        "Inconsistent GraphInfo: Constant operation with {id} is missing operations"
+                        "TensorRT engine has refittable weights that received no data: {never_supplied:?}"
                     ),
                 }
                 .into());
             }
+            info!(
+                "URL constants: {} deferred ({} bytes), {} fetched before the build, {} unused and not fetched; engine ready after {:?}, weights bound after {:?}, {} refit call(s), peak fetched bytes held {}",
+                stats.deferred,
+                stats.total_bytes,
+                stats.eager,
+                stats.skipped_unused,
+                engine_ready,
+                build_start.elapsed(),
+                stats.refit_calls,
+                stats.peak_held_bytes
+            );
+        } else {
+            refitter.refit_cuda_engine()?;
         }
-        refitter.refit_cuda_engine()?;
+        drop(refitter);
+        drop(held);
 
         let runtime_config = engine
             .create_runtime_config()
@@ -739,6 +966,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
+            weightless_build: self.options.weightless_build,
         }))
     }
 
